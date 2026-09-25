@@ -1,0 +1,12 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/
+PSWindows
+
+PS C:\Users\Admin> $Host.UI.RawUI.WindowTitle = "iamt-corpus-title"
+PS C:\Users\Admin> Write-Host "coloured" -ForegroundColor Green
+coloured
+PS C:\Users\Admin> Write-Output "Πριβετ μιρ "
+Πριβετ μιρ
+PS C:\Users\Admin> exit

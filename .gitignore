@@ -1,0 +1,20 @@
+_publish/
+
+# Build output
+*.exe
+*.dll
+*.test
+
+# Local working files: traces, timing and stderr logs, screenshot scratch.
+trace*.jsonl
+trace*.log
+err*.log
+timing.txt
+_shots/
+
+# Local assistant and editor context files.
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+QWEN.md
+.cursorrules

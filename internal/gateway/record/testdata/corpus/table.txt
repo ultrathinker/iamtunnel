@@ -1,0 +1,37 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/
+PSWindows
+
+PS C:\Users\Admin> Get-Process | Sort-Object CPU -Descending | Select-Object -Fi
+rst 8 | Format-Table -AutoSize
+
+Handles NPM(K)  PM(K)  WS(K) CPU(s)   Id SI ProcessName
+------- ------  -----  ----- ------   -- -- -----------
+   2580      0     40    172 461.45    4  0 System
+    946    277 325988 359188 303.84 5656  0 MsMpEng
+    249     14 190912 203916 284.47 1972  0 svchost
+    744     19  19300  38872  38.95 4404  0 SearchIndexer
+    864     20   6908  25100  23.22 2912  0 svchost
+    329     17   7556  29316  21.33 6208  0 svchost
+    924     64  68720 108776  20.86 1416  1 dwm
+   1029     17   6288  15952  16.66  700  0 svchost
+
+
+PS C:\Users\Admin> Get-Service | Select-Object -First 3 | Format-List Name,Statu
+s
+
+
+Name   : AarSvc_41312
+Status : Stopped
+
+Name   : ALG
+Status : Stopped
+
+Name   : AppIDSvc
+Status : Stopped
+
+
+
+PS C:\Users\Admin> exit

@@ -1,0 +1,11 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/
+PSWindows
+
+PS C:\Users\Admin> for ($i=0; $i -le 100; $i+=10) { Write-Progress -Activity "Co
+py" -Status "$i%" -PercentComplete $i; Start-Sleep -Milliseconds 150 }; "progres
+s-done"
+progress-done
+PS C:\Users\Admin> exit

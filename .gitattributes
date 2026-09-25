@@ -1,0 +1,9 @@
+# Byte-exact fixtures: the recording corpus tests compare the parser's
+# transcript with these files byte for byte, and the .cast streams carry
+# the machine's own CR/LF. Git must never convert line endings here, or a
+# Windows checkout with core.autocrlf=true turns the corpus tests red.
+internal/gateway/record/testdata/** -text
+
+# Every Go source is LF in the repository and in every checkout, so the
+# working tree matches the blobs byte for byte on Windows too.
+*.go text eol=lf

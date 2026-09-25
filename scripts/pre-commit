@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# IAMT-10 pre-commit hook: runs the IAMT-10 quality gates and blocks the
+# commit when any of them fails. Install it with scripts\install-hooks.ps1
+# (Windows) or by copying this file to .git/hooks/pre-commit and running
+# "chmod +x" on it. Do not commit hook installation into the repository.
+#
+# Git runs hooks with the working directory at the top of the working tree,
+# but resolving through git keeps this correct in worktrees as well.
+
+set -e
+
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || root="."
+scripts="${root}/scripts"
+
+if command -v powershell >/dev/null 2>&1; then
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File "${scripts}/gates.ps1"
+fi
+if command -v pwsh >/dev/null 2>&1; then
+    exec pwsh -NoProfile -ExecutionPolicy Bypass -File "${scripts}/gates.ps1"
+fi
+exec sh "${scripts}/gates.sh"

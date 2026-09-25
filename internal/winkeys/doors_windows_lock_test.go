@@ -156,8 +156,8 @@ func TestFileLock_ReleasedWhenHolderKilled(t *testing.T) {
 	}
 	_ = cmd.Wait()
 
-	// The lock must free itself promptly; poll well inside
-	// AcquireFileLock's own ~2s budget times a small safety margin.
+	// The lock must free itself promptly: a released lock is taken on
+	// the first try, long before AcquireFileLock's own budget matters.
 	deadline := time.Now().Add(5 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -201,15 +201,15 @@ func TestAcquireFileLock_TimesOutOnStuckHolder(t *testing.T) {
 		if r.err == nil {
 			t.Fatalf("AcquireFileLock succeeded against a permanently stuck holder")
 		}
-		// AcquireFileLock's documented budget is ~25*80ms = ~2s.
+		// AcquireFileLock's documented budget is lockContentionWait.
 		// Give it generous slack for a loaded CI box, but a value
 		// anywhere near the 10s outer bound means the retry loop is
 		// not doing what the comment says.
-		if r.elapsed > 5*time.Second {
-			t.Fatalf("AcquireFileLock took %s to give up, budget is ~2s", r.elapsed)
+		if r.elapsed > lockContentionWait+5*time.Second {
+			t.Fatalf("AcquireFileLock took %s to give up, budget is %s", r.elapsed, lockContentionWait)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("AcquireFileLock did not return within 10s — it hung instead of erroring on a stuck holder")
+	case <-time.After(lockContentionWait + 20*time.Second):
+		t.Fatal("AcquireFileLock did not return — it hung instead of erroring on a stuck holder")
 	}
 }
 

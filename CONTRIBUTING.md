@@ -20,7 +20,7 @@ what ships on the gateway. Windows does not need cgo for either build.
 
 On Linux, building the full GUI needs the desktop dev packages: `libx11-dev
 libxkbcommon-dev libxkbcommon-x11-dev libxcursor-dev libxfixes-dev
-libwayland-dev libvulkan-dev libegl1-mesa-dev libgles2-mesa-dev` (headers only — nothing is opened at build
+libwayland-dev libvulkan-dev libegl1-mesa-dev libgles2-mesa-dev libx11-xcb-dev` (headers only — nothing is opened at build
 time).
 
 ## Testing

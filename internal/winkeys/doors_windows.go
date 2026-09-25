@@ -135,11 +135,19 @@ type FileLock struct {
 // server's data directory rather than alongside the authorised
 // keys file, and Door.lockPath() takes care of deriving it on each
 // platform. On Windows the historical "keyFile.lock" path still
-// works when the caller passes it through Door.lockPath(). Tries
-// 100 times at 20 ms (~2 s total) before declaring contention and
-// returning an error — a holder that never releases must surface as
-// a failure, not a hang. This bound is verified by
+// works when the caller passes it through Door.lockPath(). Polls
+// every 20 ms for up to lockContentionWait before declaring
+// contention and returning an error — a holder that never releases
+// must surface as a failure, not a hang. This bound is verified by
 // TestAcquireFileLock_TimesOutOnStuckHolder.
+// lockContentionWait bounds how long AcquireFileLock waits for a busy
+// lock. The handle is not queued, so under sustained contention a
+// waiter can miss every gap for a while: two writers cycling hundreds
+// of flushed install/remove pairs on a slow CI disk missed them for
+// more than 2 s. Ten seconds is still a bounded failure for a holder
+// that never lets go.
+const lockContentionWait = 10 * time.Second
+
 func AcquireFileLock(lockPath string) (*FileLock, error) {
 	namePtr, err := windows.UTF16PtrFromString(lockPath)
 	if err != nil {
@@ -151,7 +159,8 @@ func AcquireFileLock(lockPath string) (*FileLock, error) {
 	// another writer's release and its next acquire. Since R4 F-08 the
 	// held section also flushes to disk, which widens it and made an
 	// 80 ms poll lose whole seconds of gaps under load.
-	for i := 0; i < 100; i++ {
+	deadline := time.Now().Add(lockContentionWait)
+	for {
 		h, err := windows.CreateFile(
 			namePtr,
 			windows.GENERIC_READ|windows.GENERIC_WRITE,
@@ -167,9 +176,11 @@ func AcquireFileLock(lockPath string) (*FileLock, error) {
 		if !isLockContention(err) {
 			return nil, fmt.Errorf("open lock %s: %w", lockPath, err)
 		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("lock %s held by another writer", lockPath)
+		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("lock %s held by another writer", lockPath)
 }
 
 // Release closes the lock handle. The on-disk lock file is left

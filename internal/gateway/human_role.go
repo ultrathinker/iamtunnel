@@ -581,7 +581,6 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		} else {
 			finishErr = rec.Close()
 		}
-		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
 		details := classifierFailureEventDetails(sessionID, start.command, classification)
@@ -592,6 +591,10 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 			Result:  riskClassifierFailureCode, // errdict:internal
 			Details: details,
 		})
+		// The journal records why the session ended before the client is
+		// told: whoever reads exit status 126 can already find the
+		// session.drop that explains it.
+		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		_ = human.Close()
 		return
 	}
@@ -606,7 +609,6 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		} else {
 			finishErr = rec.Close()
 		}
-		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
 		details := map[string]interface{}{
@@ -633,6 +635,10 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 			Result:  dropCode,
 			Details: details,
 		})
+		// The journal records why the session ended before the client is
+		// told: whoever reads exit status 126 can already find the
+		// session.drop that explains it.
+		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		_ = human.Close()
 		return
 	}
@@ -655,7 +661,6 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		} else {
 			finishErr = rec.Close()
 		}
-		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
 		details := map[string]interface{}{
@@ -670,6 +675,10 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 			Result:  "E_COMMAND_BLOCKED", // errdict:internal
 			Details: details,
 		})
+		// The journal records why the session ended before the client is
+		// told: whoever reads exit status 126 can already find the
+		// session.drop that explains it.
+		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		_ = human.Close()
 		return
 	}

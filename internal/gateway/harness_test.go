@@ -146,6 +146,13 @@ type fakeTargetSSHD struct {
 	// the human sent, which models an interactive terminal, not a one-shot
 	// command.
 	onExecImmediate func(ch ssh.Channel)
+	// onSubsystemImmediate, if set, replaces the generic echo loop for a
+	// "subsystem" channel request: it alone is responsible for speaking
+	// whatever protocol the subsystem name implies (1.50: the gateway
+	// only ever forwards "sftp" here) and closing ch. name is the
+	// subsystem name the request named, for a handler that wants to
+	// assert it.
+	onSubsystemImmediate func(ch ssh.Channel, name string)
 	// silent makes the sshd accept a connection and never send a byte of
 	// the protocol; hangSessionOpen makes it finish the handshake and then
 	// leave every session channel-open unanswered (IAMT-450: a hung sshd,
@@ -234,6 +241,7 @@ func (s *fakeTargetSSHD) conn(raw net.Conn) {
 	onWindowChange := s.onWindowChange
 	onPTYReq := s.onPTYReq
 	onExecImmediate := s.onExecImmediate
+	onSubsystemImmediate := s.onSubsystemImmediate
 	silent, hangSessionOpen := s.silent, s.hangSessionOpen
 	s.mu.Unlock()
 	if silent {
@@ -269,7 +277,7 @@ func (s *fakeTargetSSHD) conn(raw net.Conn) {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.serveEchoSession(ch, rr, onWindowChange, onPTYReq, onExecImmediate)
+			s.serveEchoSession(ch, rr, onWindowChange, onPTYReq, onExecImmediate, onSubsystemImmediate)
 		}()
 	}
 }
@@ -323,6 +331,12 @@ func (s *fakeTargetSSHD) setOnExecImmediate(fn func(ch ssh.Channel)) {
 	s.mu.Unlock()
 }
 
+func (s *fakeTargetSSHD) setOnSubsystemImmediate(fn func(ch ssh.Channel, name string)) {
+	s.mu.Lock()
+	s.onSubsystemImmediate = fn
+	s.mu.Unlock()
+}
+
 func (s *fakeTargetSSHD) setSilent(silent bool) {
 	s.mu.Lock()
 	s.silent = silent
@@ -335,12 +349,14 @@ func (s *fakeTargetSSHD) setHangSessionOpen(hang bool) {
 	s.mu.Unlock()
 }
 
-func (s *fakeTargetSSHD) serveEchoSession(ch ssh.Channel, reqs <-chan *ssh.Request, onWindowChange func(cols, rows int), onPTYReq func(cols, rows int), onExecImmediate func(ch ssh.Channel)) {
+func (s *fakeTargetSSHD) serveEchoSession(ch ssh.Channel, reqs <-chan *ssh.Request, onWindowChange func(cols, rows int), onPTYReq func(cols, rows int), onExecImmediate func(ch ssh.Channel), onSubsystemImmediate func(ch ssh.Channel, name string)) {
 	defer ch.Close()
 	started := make(chan struct{})
 	reqsDone := make(chan struct{})
 	var once sync.Once
 	isExec := false
+	isSubsystem := false
+	subsystemName := ""
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -369,6 +385,22 @@ func (s *fakeTargetSSHD) serveEchoSession(ch ssh.Channel, reqs <-chan *ssh.Reque
 					_ = r.Reply(true, nil)
 				}
 				isExec = true
+				once.Do(func() { close(started) })
+			case "subsystem":
+				sub, err := sshx.ParseSubsystem(r.Payload)
+				// A machine with no subsystem handler has no sftp-server:
+				// it refuses, as a real sshd without the Subsystem line does.
+				if err != nil || onSubsystemImmediate == nil {
+					if r.WantReply {
+						_ = r.Reply(false, nil)
+					}
+					continue
+				}
+				if r.WantReply {
+					_ = r.Reply(true, nil)
+				}
+				isSubsystem = true
+				subsystemName = sub.Name
 				once.Do(func() { close(started) })
 			default:
 				if r.WantReply {
@@ -401,6 +433,10 @@ func (s *fakeTargetSSHD) serveEchoSession(ch ssh.Channel, reqs <-chan *ssh.Reque
 	}
 	if isExec && onExecImmediate != nil {
 		onExecImmediate(ch)
+		return
+	}
+	if isSubsystem && onSubsystemImmediate != nil {
+		onSubsystemImmediate(ch, subsystemName)
 		return
 	}
 

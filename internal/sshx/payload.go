@@ -56,6 +56,13 @@ type Exec struct {
 	Command string
 }
 
+// Subsystem — RFC 4254 §6.5, "subsystem". Same wire shape as Exec (one
+// string), given its own type so a caller reads "the subsystem name",
+// not "a command", at the call site (1.50: the sftp subsystem, §4.3).
+type Subsystem struct {
+	Name string
+}
+
 // Env — RFC 4254 §6.4, "env".
 type Env struct {
 	Name  string
@@ -126,6 +133,11 @@ func MarshalWindow(w WindowChange) []byte {
 // MarshalExec returns the type-specific payload for "exec".
 func MarshalExec(e Exec) []byte {
 	return writeString(nil, e.Command)
+}
+
+// MarshalSubsystem returns the type-specific payload for "subsystem".
+func MarshalSubsystem(s Subsystem) []byte {
+	return writeString(nil, s.Name)
 }
 
 // MarshalEnv returns the type-specific payload for "env".
@@ -264,6 +276,19 @@ func ParseExec(b []byte) (Exec, error) {
 		return Exec{}, fmt.Errorf("exec trailing bytes: %d", len(b)-off)
 	}
 	return Exec{Command: s}, nil
+}
+
+// ParseSubsystem parses the "subsystem" payload.
+func ParseSubsystem(b []byte) (Subsystem, error) {
+	off := 0
+	s, err := readString(b, &off)
+	if err != nil {
+		return Subsystem{}, fmt.Errorf("subsystem name: %w", err)
+	}
+	if off != len(b) {
+		return Subsystem{}, fmt.Errorf("subsystem trailing bytes: %d", len(b)-off)
+	}
+	return Subsystem{Name: s}, nil
 }
 
 // ParseEnv parses the "env" payload.

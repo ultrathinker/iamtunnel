@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"strconv"
+	"unicode/utf8"
 )
 
 // ParseExec is ParseCast's twin for the other recording format.
@@ -59,6 +60,14 @@ func ParseExec(chunk []byte, remainder []byte, vt *VT) []byte {
 			Data    string  `json:"data"`
 			Status  *uint32 `json:"status"`
 			Signal  string  `json:"signal"`
+			// 1.50 sftp entries (ExecRecorder.SFTPFile).
+			Op        string `json:"op"`
+			Direction string `json:"direction"`
+			Path      string `json:"path"`
+			NewPath   string `json:"newPath"`
+			Size      *int64 `json:"size"`
+			SHA256    string `json:"sha256"`
+			Outcome   string `json:"outcome"`
 		}
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
@@ -74,7 +83,22 @@ func ParseExec(chunk []byte, remainder []byte, vt *VT) []byte {
 			if err != nil {
 				continue
 			}
+			if ev.Stream == "stdin" {
+				// 1.50: what the person sent. A script reads as text; a
+				// file piped in as bytes would only fill the screen with
+				// noise, so it is named by its size instead.
+				if utf8.Valid(data) {
+					vt.Write([]byte("\x1b[2m"))
+					vt.Write(data)
+					vt.Write([]byte("\x1b[0m"))
+				} else {
+					vt.Write([]byte("[stdin: " + strconv.Itoa(len(data)) + " bytes of binary data]\r\n"))
+				}
+				continue
+			}
 			vt.Write(data)
+		case "sftp":
+			vt.Write([]byte(sftpLine(ev.Op, ev.Direction, ev.Path, ev.NewPath, ev.Size, ev.SHA256, ev.Outcome)))
 		case "exit-status":
 			// Only a non-zero status is worth a line: every successful
 			// command ending in "[exit status 0]" buries the one that
@@ -88,4 +112,42 @@ func ParseExec(chunk []byte, remainder []byte, vt *VT) []byte {
 			}
 		}
 	}
+}
+
+// sftpLine is one SFTP operation of a recording (1.50) as a transcript
+// line: "sftp upload C:/x.jpg (48213 bytes, sha256 ab12...) ok".
+func sftpLine(op, direction, path, newPath string, size *int64, sha, outcome string) string {
+	verb := op
+	if op == "open" && direction != "" {
+		verb = direction
+	}
+	line := "sftp " + verb + " " + path
+	if newPath != "" {
+		line += " -> " + newPath
+	}
+	var facts []string
+	if size != nil {
+		facts = append(facts, strconv.FormatInt(*size, 10)+" bytes")
+	}
+	if sha != "" {
+		if sha == "non-sequential" {
+			facts = append(facts, "sha256 not computed: non-sequential")
+		} else {
+			facts = append(facts, "sha256 "+sha)
+		}
+	}
+	if len(facts) > 0 {
+		line += " ("
+		for i, f := range facts {
+			if i > 0 {
+				line += ", "
+			}
+			line += f
+		}
+		line += ")"
+	}
+	if outcome != "" {
+		line += " " + outcome
+	}
+	return line + "\r\n"
 }

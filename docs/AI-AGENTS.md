@@ -71,19 +71,39 @@ warning, a block) go to stderr, never mixed into the command's stdout — so
 the agent's own output parsing doesn't have to account for iamtunnel at
 all.
 
-One deliberate restriction: an exec-only grant carries no standard input.
-The gateway closes the machine's stdin right after forwarding the command,
-so an agent that runs an interpreter by name with no script argument
-(`python`, `powershell`, `bash`) gets a program that immediately sees
-end-of-input, not a hidden shell it can drive interactively. Pass data the
-way the command itself supports — a filename argument or an input file the
-command opens itself.
+**Standard input is carried through, whole scripts included.** Since 1.50,
+whatever the agent writes to a command's stdin reaches the machine as-is and
+is fully captured in the session recording. If the command is an
+interpreter run by name with no script argument of its own (`python`,
+`powershell`, `bash`, and the like), the gateway reads that stdin whole
+before forwarding — to end of input, at most 1 MiB and 60 seconds — and
+hands the script to the classifier together with the command, so a piped
+script is judged as one unit, not waved through as an opaque program name. A
+script that doesn't finish reading within those bounds, or isn't text,
+can't be judged whole, and no approval applies to it — approving it could
+only name the part the gateway saw, and would still release whatever came
+after. Under `ask` and `block` such a command is refused with
+`E_STDIN_SCRIPT_UNJUDGED` (exit code `126`, no `approval-id` issued); under
+`log` and `warn` it goes through, fully recorded, with the reason noted in
+the journal. Send anything that can't be judged this way — a large or
+long-running script — as a file instead (see below) and run the file.
+
+**Files move with plain `scp`.** Since 1.50 the gateway also passes the
+`sftp` subsystem, which is what a modern `scp` client uses, on the same
+grant — no separate capability or setup needed. The Client tab's generated
+prompt (below) includes ready `scp` lines for exactly this. Every file
+operation — upload, download, delete, rename, create or remove a directory,
+change attributes — is logged (path, size, SHA-256) and judged against the
+declared goal the same way a command is. Under `ask`, an operation the
+classifier holds prints an `approval-id` to stderr, the same as a held
+command; approve it with `iamtunnel admin risk approve <approval-id>` and
+repeat the transfer. Reads and downloads are only logged, never held.
 
 The GUI's Client tab generates a ready-made prompt block for exactly this
-setup — the connection command, the machine name, and the goal text — meant
-to be pasted straight into an agent's system prompt or task description, so
-setting an agent loose on a grant doesn't require hand-writing this each
-time.
+setup — the connection command, `scp` lines for moving files, the machine
+name, and the goal text — meant to be pasted straight into an agent's system
+prompt or task description, so setting an agent loose on a grant doesn't
+require hand-writing this each time.
 
 ## How the classifier and ask mode work
 

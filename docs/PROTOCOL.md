@@ -18,7 +18,7 @@ backward compatibility is not promised.
 | Max key attempts | 32 |
 | Time | UTC, RFC 3339 / ISO-8601 with an explicit zone; the gateway is the source of truth |
 | JSON string encoding | UTF-8; identifiers are ASCII only |
-| Session v1 | exactly one `session` channel; shell and exec, no SFTP/scp, port forwarding or agent forwarding |
+| Session v1 | exactly one `session` channel; shell, exec and (since 1.50) the `sftp` subsystem — `scp` runs through it too, and file operations are logged and judged (§4.3); no port forwarding, agent forwarding or other subsystems |
 | KEX | `mlkem768x25519-sha256`, `curve25519-sha256`, `diffie-hellman-group14-sha256` in that order; the post-quantum hybrid comes first (IAMT-226), a peer without it settles on `curve25519-sha256` |
 | Ciphers | `chacha20-poly1305@openssh.com`, `aes256-gcm@openssh.com`, `aes256-ctr` in that order |
 | MAC for non-AEAD | `hmac-sha2-512-etm@openssh.com`, `hmac-sha2-256-etm@openssh.com` |
@@ -190,7 +190,7 @@ not a `state` value: it is `state:"verified", online:false`.
 code):
 
 ```iamtunnel-event-types-v1
-["admin.op","auth.failure","auth.handshake_failure","auth.success","door.close","door.open","door.sanitize","enrol.failed","enrol.start","enrol.verified","grant.revoke","hostkey.mismatch","hostkey.rotate","log.rotate","machine.connected","machine.disconnected","machine.rejected","recording.export","risk.approval","session.drop","session.risk","session.start","session.stop","session.watch"]
+["admin.op","auth.failure","auth.handshake_failure","auth.success","door.close","door.open","door.sanitize","enrol.failed","enrol.start","enrol.verified","grant.revoke","hostkey.mismatch","hostkey.rotate","log.rotate","machine.connected","machine.disconnected","machine.rejected","recording.export","risk.approval","session.drop","session.file","session.risk","session.start","session.stop","session.watch"]
 ```
 
 An unlisted type is an implementation bug. Every rule below that requires an
@@ -693,11 +693,11 @@ forbidden.
 |---|---|---|
 | channel request `pty-req` | `string TERM`, `uint32 cols`, `uint32 rows`, `uint32 width-px`, `uint32 height-px`, `string modes` | `true`; with `caps:["exec"]` refuse with `E_SSH_SHELL_FORBIDDEN` **and close the session immediately** (1.8: the line `[iamtunnel] E_SSH_SHELL_FORBIDDEN: this grant allows individual commands only — an interactive terminal (shell) cannot be opened with it.\r\nRun the command like this: iamtunnel client exec <machine> -- <command>.\r\n` in plain text, suggesting `client exec`, goes to the channel's extended data *before* closing — not silence until `SessionSetupTimeout`); otherwise relay and return the machine's result to the human within 10 s; `cols,rows` go into the recording |
 | channel request `shell` | empty | `true`; with `caps:["exec"]`, the same as `pty-req`: `E_SSH_SHELL_FORBIDDEN`, a line in extended data, the session closes immediately; without an accepted `pty-req`, refuse with `E_SSH_SHELL_NO_PTY` the same way (since 1.14, IAMT-464: such a program's stderr would reach neither the human nor the recording); otherwise relay and return the machine's result within 10 s |
-| channel request `exec` | `string command` | `true`; classify with the chosen `risk_classifier` before forwarding — **regardless of whether this is the session's first accepted request or exec follows an already-accepted `pty-req`** (1.8: both points apply the same rule): green relays silently; non-green journals `session.risk` and, per `risk_action`, allows/warns/asks for a one-time human approval for red/blocks and returns `exit-status 126` without forwarding. In `ai` and `both` only the scrubbed string leaves for the decision; a local `both` red is already decided and doesn't wait for the second opinion's 800 ms. An AI error explicitly warns the human of degraded protection. With `caps:["exec"]` the gateway closes the machine's stdin right after forwarding exec (`CloseWrite`, 1.46): the grant carries no standard input, and an interpreter started by name without a command meets end-of-input instead of a silent command channel. Bytes the human still writes to stdin never reach the machine: the first one ends the session as `session.drop` with `E_SSH_STDIN_FORBIDDEN`, and a line with the code and a `client exec` hint goes to the channel's extended data |
+| channel request `exec` | `string command` | `true`; classify with the chosen `risk_classifier` before forwarding — **regardless of whether this is the session's first accepted request or exec follows an already-accepted `pty-req`** (1.8: both points apply the same rule): green relays silently; non-green journals `session.risk` and, per `risk_action`, allows/warns/asks for a one-time human approval for red/blocks and returns `exit-status 126` without forwarding. In `ai` and `both` only the scrubbed string leaves for the decision; a local `both` red is already decided and doesn't wait for the second opinion's 800 ms. An AI error explicitly warns the human of degraded protection. Since 1.50 stdin is **never closed** on any grant: the human's bytes go to the machine as-is and land in the session recording in full (`stream:"stdin"` chunks in `.exec.jsonl`, §8). If the command is an interpreter with no script argument of its own (`powershell`, `pwsh`, `cmd`, `bash`, `sh`, `python`, `python3`, `node`, `perl`, `ruby`, including forms like `-`, `-Command -`, `-File -`; the program name is normalized — the path and a `.exe`/`.cmd`/`.bat`/`.com` suffix are dropped case-insensitively — and the interpreter is looked for in the first command of each pipeline: `&&`, `||` and `;` start a new one, and the command after a bare `|` reads the previous command's output, not the session's stdin; the same applies inside wrappers the classifier unwraps: `cmd /c`, `bash -c`, `powershell -Command`, `start`; a run with a help/version/query flag — `--version`, `--help`, `/?`, `-?`, `python -V`, `node -v`, `perl -v`, `powershell -Help` and the like — does not read a script and does not count as a reader, unless the same run also has an explicit stdin-reading form (`-Command -`, `-File -`, `-`, `-s`); the exception is `pwsh -Version`/`pwsh -v`: PowerShell 7 prints its version and ignores everything else including an explicit stdin form, so it is never a reader whatever else is on the line; for Windows PowerShell, `-Version <n>` selects the engine and is not a query, and parameter values (`-ExecutionPolicy Bypass`, `-Version 2.0`, `-WindowStyle Hidden`, etc.) don't count as a script argument; a wrapper nested more than three deep counts as reading stdin), the gateway reads stdin whole before forwarding — to EOF, at most 1 MiB and 60 s — and classifies `command + "\n--- stdin script ---\n" + text`. A script longer than 1 MiB, not finished within 60 s, or not text is not considered judged: it gets a red verdict (rule `stdin-script-unjudged`, with the reason in `reason`), and **no approval applies to it** — an approval could only name the part that was seen, and would release whatever came after it. Under `ask` and `block` (and on a classifier failure that would otherwise have asked the human), the command is refused: `session.risk` with `action:"block"`, `session.drop` with `E_STDIN_SCRIPT_UNJUDGED`, `exit-status 126` and a line in extended data — the script wasn't judged whole (with the reason); send it as a file over `scp` and run the file, or supply a finite text script under 1 MiB and close stdin; no approval-id is issued. Under `log`/`warn` the command goes through like any red, with the reason in `session.risk` (`details.stdinScriptUnjudged`). Either way, every byte the gateway took from the channel is recorded — including the part read past 1 MiB before the decision. On a refusal, the stdin read is sealed: no new read starts, and one already in flight ends by closing the channel (after `session.drop` and `exit-status 126`); what it brought in is written, and only then does the recording finish. If the client doesn't answer the channel close within 10 s, the gateway closes the whole SSH connection to force the read to end, waits for it, records what it brought in, aborts the recording with this reason, and writes a separate `session.drop` `recording: …`. For such a command the gateway answers the human's `exec` immediately, without waiting for the machine: a client that only sends stdin after the reply (x/crypto, `iamtunnel client exec`) would otherwise send nothing; a refusal after this point is the same `exit-status 126`. An `ask` approval for it is bound to the command together with the script. Any other command starts without delay, and its stdin is just data |
 | channel request `window-change` | `uint32 cols`, `uint32 rows`, `uint32 width-px`, `uint32 height-px` | `false` (RFC 4254 §6.7); relay; add a resize to the cast |
 | channel request `env` | `string name`, `string value` | client value preserved: relay `TERM`/`LANG` and return the machine's result at `true`; discard other names, return failure at `true`, no reply at `false` |
 | channel request `signal` | `string signal-name` | `false` (RFC 4254 §6.9); relay |
-| channel request `subsystem` | `string subsystem` | usually `true`; refuse, event, failure at `true`, `E_SSH_SUBSYSTEM_FORBIDDEN` |
+| channel request `subsystem` | `string subsystem` | `true`; since 1.50 `subsystem="sftp"` relays on any grant (`shell` or `exec`; see §4.3); any other name — as before: refuse, event, failure at `true`, `E_SSH_SUBSYSTEM_FORBIDDEN` |
 | channel request agent `auth-agent-req@openssh.com` | empty | usually `true`; refuse, event, failure at `true`, `E_SSH_AGENT_FORBIDDEN` |
 | channel request x11 `x11-req` | `boolean single`, `string protocol`, `string cookie`, `uint32 screen` | usually `true`; refuse, event, failure at `true`, `E_SSH_X11_FORBIDDEN` |
 | channel request `eow@openssh.com` | empty | `false`; accepted as a compatible OpenSSH notice, not relayed, no event |
@@ -775,6 +775,94 @@ refusal, and gateway shutdown. Probes are not sent once a session has
 already ended another way, and they do not extend the door's idle close:
 transport closed by the human follows the ordinary path, and the probe stops
 right away.
+
+### 4.3 The `sftp` subsystem
+
+Since 1.50 a `subsystem` request named `sftp` relays into the machine's
+nested session (the same path `shell`/`exec` use), on any grant —
+`caps:["shell"]` and `caps:["exec"]` alike. The gateway asks the machine
+immediately, as with `pty-req`, and passes its answer back to the human: a
+machine with no `sftp-server` refuses it, and that's an ordinary request
+refusal after which the channel stays usable (until the `sftp-server` stream
+is read, nothing has happened, so no byte passes before the recording is
+created). The session is recorded as exec without a PTY (`.exec.jsonl`,
+recorded command `sftp`); the banner goes to extended data. Any other
+subsystem name is refused as in §4.1.
+
+The gateway parses the SFTP v3 stream (draft-ietf-secsh-filexfer-02, the
+`sftp-server` dialect OpenSSH uses) in both directions, **without rewriting a
+single byte on the successful path**: packets are relayed whole and in
+order. Packets split across a read boundary, and several packets in one
+read, are the ordinary case. A stream that stops being a sequence of SFTP
+packets (zero length, a length over 1 MiB) ends the session (`session.drop`)
+rather than being relayed on unparsed.
+
+From the human→machine stream the gateway extracts `SSH_FXP_OPEN` (path,
+pflags), `SSH_FXP_WRITE`/`SSH_FXP_READ` (handle, offset, length — size by
+handle and SHA-256 if the data went sequentially from offset 0; otherwise
+`"non-sequential"` instead of a hash), `SSH_FXP_CLOSE`, `SSH_FXP_REMOVE`,
+`SSH_FXP_RENAME`, `SSH_FXP_MKDIR`, `SSH_FXP_RMDIR`,
+`SSH_FXP_SETSTAT`/`SSH_FXP_FSETSTAT`, plus `SSH_FXP_SYMLINK` and the OpenSSH
+extensions `posix-rename@openssh.com`, `hardlink@openssh.com`,
+`lsetstat@openssh.com`, `copy-data` (the OpenSSH client renames via
+`posix-rename` whenever the server offers it). Each relayed request holds
+its own request id until the machine answers; a client that repeats the id
+of a request not yet answered ends the session (`session.drop`, reason
+`sftp request id reused ...`) before that request is relayed — two requests
+sharing one id would produce one reply and one journal line for two
+operations. The machine→human replies `SSH_FXP_HANDLE`/`SSH_FXP_DATA`/`SSH_FXP_STATUS`
+tie a handle back to its path and give the operation's outcome.
+
+**Always logged** (event `session.file`, §1.7, and a `{"type":"sftp",...}`
+line in `.exec.jsonl`): every closed file (`op:"open"`, `direction`
+upload/download, `path`, `size`, `sha256` or `"non-sequential"`, `outcome`),
+every `remove`/`rename`/`mkdir`/`rmdir`/`setstat`, `copy` (`copy-data`:
+`path` is the source, `newPath` the destination, `requestedLength` how much
+was requested; no size is asserted, because the machine never reports one,
+and the destination file's close is written with no `size` and
+`sha256:"not computed: written by copy-data"`), `extension` (an SFTP
+extension the gateway doesn't parse; `path` carries its name), a gateway
+refusal (`outcome` starts with `denied:`, `result:"denied"`), and a file left
+open at session end (`outcome:"not closed: the session ended"`). The
+event's `result` is `ok`, `failed` (the machine answered with an error) or
+`denied`.
+
+**Judged by the risk classifier**, the same code path as exec commands
+(`session.risk` with `details.subsystem:"sftp"`, §6, against the pair's
+`goal` and its recent history): `OPEN` with any of the write/create/trunc/
+append pflags, `REMOVE`, `RENAME` (and `posix-rename`), `MKDIR`, `RMDIR`,
+`SETSTAT`/`FSETSTAT`/`lsetstat`, `SYMLINK`, `hardlink`, `copy-data`
+(`sftp: copy <source> -> <destination>`, both handles resolved to paths) and
+any other `SSH_FXP_EXTENDED` except the ones that are plainly read-only
+(`statvfs@openssh.com`, `fstatvfs@openssh.com`, `limits@openssh.com`,
+`expand-path@openssh.com`, `home-directory`,
+`users-groups-by-id@openssh.com` — these pass unjudged): such an extension
+is judged by name, `sftp: extension <name>`, before relaying. The action is
+submitted as a string like `sftp: write /C:/TEST111/car.jpg`, `sftp: remove
+/C:/x/y.txt`, `sftp: mkdir /C:/x`, `sftp: rename A -> B`; these strings enter
+the pair's recent history the same way exec commands do. Reads and
+downloads are only logged. A judged-kind request the gateway couldn't
+parse is not relayed: the reply is `SSH_FX_BAD_MESSAGE`.
+
+`risk_action` applies as it does for exec: `log`/`warn` let it through, with
+the classification going to `session.risk`; SFTP has no stderr of its own,
+so there's no separate warning on the wire. `ask` on red — the request is
+**not relayed**: the gateway itself answers `SSH_FXP_STATUS` with
+`SSH_FX_PERMISSION_DENIED` and the same approval text with
+`approval-id=… E_APPROVAL_REQUIRED` the exec path prints, writing that same
+text to the channel's extended data too: OpenSSH clients (`sftp`, `scp`)
+show only "Permission denied" from the STATUS reply, while the `ssh`
+channel's stderr shows the human the rest. The approval is bound to the
+person, the machine and the action string: `iamtunnel admin risk approve
+<id>` and repeating the same operation let it through once. `block` on red
+uses the same form with `E_COMMAND_BLOCKED` text. The SFTP session stays
+open — only that operation is refused. A classifier failure behaves as it
+does for exec in the same mode.
+
+Legacy `scp` (`scp -O`, or an older client) is an ordinary exec (`scp -t
+<path>`/`scp -f <path>`, data on stdin): since 1.50 (§4.1 — stdin is no
+longer closed) it works like any exec command, judged by its own command
+line; the gateway does not parse the legacy scp protocol.
 
 ## 5. Gateway ↔ machine
 
@@ -1424,12 +1512,13 @@ refusal; the detailed state codes are available only to admin commands.
 | `E_CONTROL_DOOR_MISMATCH` | The door id or key doesn't match. | — |
 | `E_CONTROL_DOOR_LIMIT` | The request exceeds the machine's local door ceilings. | — |
 | `E_COMMAND_BLOCKED` | The exec command was stopped by the gateway's risk policy. | — |
+| `E_STDIN_SCRIPT_UNJUDGED` | A script on an interpreter's stdin could not be judged whole (longer than 1 MiB, didn't finish within 60 s, or not text); under `ask` and `block` the command is refused with no way to approve it (§4.1). | — |
 | `E_RISK_CLASSIFIER_UNAVAILABLE` | In `ai`/`both`, the external classifier is unreachable; exec is stopped before reaching the machine and awaits human approval. Journaled in `session.drop` to distinguish "the AI often objects" from "the AI was down". Ways out: approve in the window, switch to `rules` with `iamtunnel admin risk source rules`, or explicitly turn off the safety net with `iamtunnel admin risk mode log` / `iamtunnel admin risk mode warn`. | — |
 | `E_APPROVAL_REQUIRED` | A red exec is stopped under `ask` and awaits a one-time human approval; the command never reached the machine. | — |
 | `E_RISK_KEY_REJECTED` | The submitted external-classifier key failed the probe request; the previous key kept working. The reason distinguishes the service declining the key from the service being unreachable. | 1 |
 | `E_APPROVAL_FORBIDDEN` | This person cannot approve someone else's ask permission. | 2 |
 | `E_APPROVAL_NOT_FOUND` | The ask permission is unknown or already expired. | 2 |
-| `E_SSH_SUBSYSTEM_FORBIDDEN` | SSH subsystems are forbidden in version 1.0. | — |
+| `E_SSH_SUBSYSTEM_FORBIDDEN` | The SSH subsystem is forbidden. Since 1.50 exactly one, `sftp`, is allowed (§4.3); any other is refused with this code. | — |
 | `E_SSH_FORWARD_FORBIDDEN` | Port forwarding is forbidden in version 1.0. | — |
 | `E_SSH_AGENT_FORBIDDEN` | Agent forwarding is forbidden in version 1.0. | — |
 | `E_SSH_X11_FORBIDDEN` | X11 forwarding is forbidden in version 1.0. | — |
@@ -1437,7 +1526,6 @@ refusal; the detailed state codes are available only to admin commands.
 | `E_SSH_SESSION_ALREADY_STARTED` | The SSH channel already started. | — |
 | `E_SSH_SHELL_FORBIDDEN` | Interactive shell sessions are forbidden by the `exec` capability. | — |
 | `E_SSH_SHELL_NO_PTY` | A shell only opens inside a terminal: request one (`ssh -t`), or run one command via exec. | — |
-| `E_SSH_STDIN_FORBIDDEN` | On a grant with the `exec` capability, standard input is not carried: the command starts with the machine's stdin already closed, and any byte the human writes is refused by the gateway — the session ends, and a line with the code and a `client exec` hint goes to extended data. | — |
 | `E_RECORDING_DISK_FULL` | Not enough space for the required session recording. | — |
 | `E_EXEC_UNKNOWN` | Unknown exec command. | 2 |
 | `E_NOT_FOUND` | The requested object was not found. | 2 |
@@ -1456,7 +1544,7 @@ listed in the checker as reserved with a reason):
 
 ```iamtunnel-error-codes-v1
 {"wire":["E_AUDIT_UNAVAILABLE","E_BOOTSTRAP_EXPIRED","E_BOOTSTRAP_USED","E_CAP_UNSUPPORTED","E_CONFLICT","E_CONTROL_CHANNEL_DUPLICATE","E_CONTROL_DOOR_CONFLICT","E_CONTROL_DOOR_LIMIT","E_CONTROL_DOOR_MISMATCH","E_CONTROL_PROTOCOL","E_ENROL_SECRET_EXPIRED","E_ENROL_SECRET_INVALID","E_ENROL_SECRET_USED","E_EXEC_UNKNOWN","E_INTERNAL","E_JSON_FIELD_UNKNOWN","E_JSON_INVALID","E_MACHINE_ALREADY_ONLINE","E_MACHINE_OFFLINE","E_MACHINE_REKEY_CONFIRMATION","E_MACHINE_REKEY_UNAVAILABLE","E_MACHINE_UNVERIFIED","E_NOT_FOUND","E_PAIRING_EXPIRED","E_PAIRING_INACTIVE","E_PAIRING_LOCKED","E_PAIRING_PIN_INVALID","E_PERSON_NAME_RESERVED","E_PROTO_CLIENT_NEWER","E_PROTO_GATEWAY_NEWER","E_TARGET_CHANNEL_INVALID"],
-"internal":["E_APPROVAL_FORBIDDEN","E_APPROVAL_NOT_FOUND","E_AUTH_KEY_UNKNOWN","E_AUTH_RATE_LIMITED","E_COMMAND_BLOCKED","E_CONTROL_EPOCH_STALE","E_CONTROL_TIMEOUT","E_CONTROL_ONLY","E_GATEWAY_FINGERPRINT_MISMATCH","E_GRANT_EXPIRED","E_GRANT_MISSING","E_MACHINE_HOSTKEY_MISMATCH","E_MACHINE_NOT_VERIFIED","E_NAME_RESERVED","E_PERSON_KEY_MISMATCH","E_RECORDING_DISK_FULL","E_RISK_CLASSIFIER_UNAVAILABLE","E_RISK_KEY_REJECTED","E_SESSION_DENIED","E_SESSION_LIMIT_MACHINE","E_SESSION_LIMIT_PERSON","E_SESSION_SETUP_TIMEOUT","E_SSH_AGENT_FORBIDDEN","E_SSH_FORWARD_FORBIDDEN","E_SSH_REQUEST_FORBIDDEN","E_SSH_SESSION_ALREADY_STARTED","E_SSH_SHELL_FORBIDDEN","E_SSH_SHELL_NO_PTY","E_SSH_STDIN_FORBIDDEN","E_SSH_SUBSYSTEM_FORBIDDEN","E_SSH_X11_FORBIDDEN","E_TIMEOUT","E_USERNAME_COLON","E_USERNAME_CONTROL","E_USERNAME_EMPTY_PART","E_USERNAME_GRAMMAR","E_USERNAME_LENGTH","E_USERNAME_NON_ASCII","E_APPROVAL_REQUIRED"],"absent":["E_DOOR_CLOSED"]}
+"internal":["E_APPROVAL_FORBIDDEN","E_APPROVAL_NOT_FOUND","E_AUTH_KEY_UNKNOWN","E_AUTH_RATE_LIMITED","E_COMMAND_BLOCKED","E_CONTROL_EPOCH_STALE","E_CONTROL_TIMEOUT","E_CONTROL_ONLY","E_GATEWAY_FINGERPRINT_MISMATCH","E_GRANT_EXPIRED","E_GRANT_MISSING","E_MACHINE_HOSTKEY_MISMATCH","E_MACHINE_NOT_VERIFIED","E_NAME_RESERVED","E_PERSON_KEY_MISMATCH","E_RECORDING_DISK_FULL","E_RISK_CLASSIFIER_UNAVAILABLE","E_RISK_KEY_REJECTED","E_SESSION_DENIED","E_SESSION_LIMIT_MACHINE","E_SESSION_LIMIT_PERSON","E_SESSION_SETUP_TIMEOUT","E_SSH_AGENT_FORBIDDEN","E_SSH_FORWARD_FORBIDDEN","E_SSH_REQUEST_FORBIDDEN","E_SSH_SESSION_ALREADY_STARTED","E_SSH_SHELL_FORBIDDEN","E_SSH_SHELL_NO_PTY","E_SSH_SUBSYSTEM_FORBIDDEN","E_SSH_X11_FORBIDDEN","E_STDIN_SCRIPT_UNJUDGED","E_TIMEOUT","E_USERNAME_COLON","E_USERNAME_CONTROL","E_USERNAME_EMPTY_PART","E_USERNAME_GRAMMAR","E_USERNAME_LENGTH","E_USERNAME_NON_ASCII","E_APPROVAL_REQUIRED"],"absent":["E_DOOR_CLOSED"]}
 ```
 
 `E_AUTH_KEY_UNKNOWN` only occurs in `PublicKeyCallback` when a fingerprint is
@@ -1522,8 +1610,11 @@ Recording starts before the first byte. Shell and exec with `pty-req` carry
 (SPEC §6.5: the first and last 10,000 lines), `.meta` carries
 `txt_omitted_lines` — how many lines exist only in `.cast`; exec without
 `pty-req` carries the lossless `.exec.jsonl`, `.meta`: first the command,
-then base64 stdout/stderr chunks, exit-status/exit-signal and EOF in one
-sequence. Before reaching the human, every byte from the machine is written
+then base64 stdout/stderr chunks, since 1.50 also stdin chunks
+(`stream:"stdin"`, what the human sent on stdin; `.meta` still carries only
+its size and SHA-256), exit-status/exit-signal and EOF in one sequence; an
+`sftp` subsystem session (§4.3) is written in the same format, with command
+`sftp` and a `{"type":"sftp",...}` line per file operation. Before reaching the human, every byte from the machine is written
 and fsynced; a failure to create, write or fsync closes the session before
 passing on the unwritten byte and creates a `session.drop` with the write
 failure's result. `.cast` is asciicast v2: `{version:2,width,height,
@@ -1576,7 +1667,8 @@ door policy.
 Reserved exclusively via `caps`: `file-transfer-exec` (1.1, exec file-transfer
 commands, not SFTP), `linux-target` (1.1, the alternate authorized_keys
 path) and `grant-caps` (grant values other than `shell`). None of these
-permit sftp, `-L/-R/-D` or agent forwarding without a further, newer spec.
+permit `-L/-R/-D` or agent forwarding without a further, newer spec; the
+`sftp` subsystem is allowed since 1.50 with no capability needed (§4.3).
 
 ## 9. Reconciliation with SPEC
 

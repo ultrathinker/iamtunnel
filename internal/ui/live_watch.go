@@ -362,7 +362,7 @@ func (f *Frame) layoutLiveSection(gtx layout.Context) layout.Dimensions {
 						)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return design.Said(gtx, f.theme, f.sel(killCtl+"/said"), clipStr(said.text, 200), said.key)
+						return f.saidFull(gtx, killCtl, said.text, said.key, 200)
 					}),
 					layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
 				)
@@ -449,7 +449,7 @@ func (f *Frame) layoutLiveSection(gtx layout.Context) layout.Dimensions {
 					)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctlAdminLive+"/said"), clipStr(said.text, 300), said.key)
+					return f.saidFull(gtx, ctlAdminLive, said.text, said.key, 300)
 				}),
 			)
 		}),
@@ -548,7 +548,7 @@ func (f *Frame) layoutSafetySection(gtx layout.Context) layout.Dimensions {
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					said := f.saidUnder(ctlAdminRiskMode)
-					return design.Said(gtx, f.theme, f.sel(ctlAdminRiskMode+"/said"), clipStr(said.text, 400), said.key)
+					return f.saidFull(gtx, ctlAdminRiskMode, said.text, said.key, 400)
 				}),
 			)
 		}),
@@ -589,7 +589,7 @@ func (f *Frame) layoutSafetySection(gtx layout.Context) layout.Dimensions {
 				}),
 				layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctlAdminRiskCheck+"/said"), clipStr(said.text, 400), said.key)
+					return f.saidFull(gtx, ctlAdminRiskCheck, said.text, said.key, 400)
 				}),
 			)
 		}),
@@ -669,7 +669,7 @@ func (f *Frame) layoutClassifierKeySection(gtx layout.Context) layout.Dimensions
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlAdminClassifierKey+"/said"), clipStr(said.text, 400), said.key)
+			return f.saidFull(gtx, ctlAdminClassifierKey, said.text, said.key, 400)
 		}),
 	)
 }

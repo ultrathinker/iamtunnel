@@ -45,7 +45,9 @@ func TestIAMT189_ForbiddenSSHRequestsAreJournaled(t *testing.T) {
 	}
 
 	hs := openHumanSession(t, client, f)
-	ok, err = hs.ch.SendRequest("subsystem", true, ssh.Marshal(struct{ Name string }{"sftp"}))
+	// Since 1.50 sftp is forwarded (PROTOCOL §4.3); every other subsystem
+	// name is still refused and journaled, so the canary uses one of those.
+	ok, err = hs.ch.SendRequest("subsystem", true, ssh.Marshal(struct{ Name string }{"netconf"}))
 	if err != nil || ok {
 		t.Fatalf("IAMT-189 canary setup: subsystem refusal = ok:%v err:%v", ok, err)
 	}

@@ -44,6 +44,8 @@ const (
 	ctlHeldOpen           = "notice/held-open"
 	ctlServerStart        = "server/start"
 	ctlServerStop         = "server/stop"
+	ctlServerAutostart    = "server/autostart"
+	ctlServerConfirm      = "server/confirm"
 	ctlAdminGrant         = "admin/grant"
 	ctlAdminRiskMode      = "admin/risk-mode"
 	ctlAdminClassifierKey = "admin/classifier-key"
@@ -176,6 +178,12 @@ type Actions struct {
 	// work from every tab, on the first screenful. It is the
 	// same control-port request "iamtunnel server stop" makes.
 	ServerStop func() (string, error)
+	// ServerAutostart turns autostart at sign-in on or off ("server
+	// install" / "server uninstall"). Needs administrator rights.
+	ServerAutostart func(enable bool) (string, error)
+	// ServerConfirmSetup lays the enrolment anchor down for a
+	// registration that predates it. Needs administrator rights.
+	ServerConfirmSetup func() (string, error)
 
 	// AdminGrant hands one person access to one machine, until the given
 	// deadline (empty means indefinite) — the same work "admin grants

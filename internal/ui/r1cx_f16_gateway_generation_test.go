@@ -111,6 +111,36 @@ func r1cxF16HomeAsked(t *testing.T, w *r1cxF16World) context.Context {
 	}
 }
 
+// r1cxF16AfterSwitch returns a moment the clock itself places after the
+// switch. A bare time.Now() taken right after the switch can carry the very
+// same reading as the switch's own stamp: on Windows the clock may advance
+// only once per tick, and under load both readings then fall in one tick.
+// The frame rightly treats a tick that did not look AFTER the switch as one
+// about the old gateway, so such a reading made this test flaky (it failed
+// once under the full suite, "held []"). Waiting until the clock has
+// moved keeps what the test proves: a tick that looked after the switch
+// lands.
+func r1cxF16AfterSwitch(t *testing.T, f *Frame) time.Time {
+	t.Helper()
+	f.mu.Lock()
+	switched := f.gatewaySwitchedAt
+	f.mu.Unlock()
+	if switched.IsZero() {
+		t.Fatal("the switch left no stamp")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		now := time.Now()
+		if now.After(switched) {
+			return now
+		}
+		if now.After(deadline) {
+			t.Fatalf("the clock did not move past the switch (%v) within 5 s", switched)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // r1cxF16Switch presses Use on work and waits for the switch itself.
 func r1cxF16Switch(t *testing.T, f *Frame) {
 	t.Helper()
@@ -199,7 +229,7 @@ func TestR1CX_F16_ATickThatLookedBeforeTheSwitchDoesNotLandAfterIt(t *testing.T)
 
 	// A tick that looked after the switch is about work, and lands.
 	f.ApplyLiveUpdate(LiveUpdate{
-		At:            time.Now(),
+		At:            r1cxF16AfterSwitch(t, f),
 		IdentityKnown: true, Identity: &AdminIdentity{Person: "work-admin", Gateway: "work:2022"},
 		HeldKnown: true, Held: []HeldCommand{{ApprovalID: "work-1", Command: "reboot"}},
 	})

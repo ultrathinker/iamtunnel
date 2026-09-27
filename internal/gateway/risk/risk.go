@@ -129,8 +129,34 @@ func badness(v Verdict) int {
 // is whitespace-trimmed; empty parts are dropped. The returned
 // slice preserves order.
 func splitOnShellOperators(s string) []string {
-	var parts []string
+	var out []string
+	for _, p := range splitShellParts(s) {
+		out = append(out, p.text)
+	}
+	return out
+}
+
+// shellPart is one segment of a command line. head is false for a
+// segment on the receiving side of a single `|`: its stdin is the
+// previous command's output, not the session's.
+type shellPart struct {
+	text string
+	head bool
+}
+
+// splitShellParts is splitOnShellOperators, keeping for each segment
+// whether it starts a pipeline.
+func splitShellParts(s string) []shellPart {
+	var parts []shellPart
 	var cur strings.Builder
+	head := true
+	flush := func(nextHead bool) {
+		if t := strings.TrimSpace(cur.String()); t != "" {
+			parts = append(parts, shellPart{text: t, head: head})
+		}
+		cur.Reset()
+		head = nextHead
+	}
 	inSingle, inDouble := false, false
 	parenDepth, braceDepth := 0, 0
 	for i := 0; i < len(s); i++ {
@@ -184,34 +210,27 @@ func splitOnShellOperators(s string) []string {
 		if !inSingle && !inDouble && parenDepth == 0 && braceDepth == 0 {
 			// Two-character operators first.
 			if c == '&' && i+1 < len(s) && s[i+1] == '&' {
-				if t := strings.TrimSpace(cur.String()); t != "" {
-					parts = append(parts, t)
-				}
-				cur.Reset()
+				flush(true)
 				i++
 				continue
 			}
 			if c == '|' && i+1 < len(s) && s[i+1] == '|' {
-				if t := strings.TrimSpace(cur.String()); t != "" {
-					parts = append(parts, t)
-				}
-				cur.Reset()
+				flush(true)
 				i++
 				continue
 			}
-			if c == ';' || c == '|' {
-				if t := strings.TrimSpace(cur.String()); t != "" {
-					parts = append(parts, t)
-				}
-				cur.Reset()
+			if c == ';' {
+				flush(true)
+				continue
+			}
+			if c == '|' {
+				flush(false)
 				continue
 			}
 		}
 		cur.WriteByte(c)
 	}
-	if t := strings.TrimSpace(cur.String()); t != "" {
-		parts = append(parts, t)
-	}
+	flush(true)
 	return parts
 }
 
@@ -222,6 +241,7 @@ func splitOnShellOperators(s string) []string {
 // (`sudo`, `doas`, `runas`) is handled directly so recursive classification
 // can carry the wrapper depth through the inner command.
 func classifyPartAtDepth(part string, wrapperDepth int) Verdict {
+	part = normalizeProgramPart(part)
 	if v, ok := classifyOpaqueCommand(part); ok {
 		return v
 	}
@@ -266,6 +286,90 @@ func classifyPartAtDepth(part string, wrapperDepth int) Verdict {
 
 const maxCommandWrapperDepth = 3
 
+// ReadsStdinScript reports whether command launches one of
+// stdinInterpreterNames in a form that reads its real commands from
+// standard input rather than from the command line (1.50, exec stdin
+// reopening): a bare interpreter, or a `-`/`-Command -`/`-File -` style
+// flag. It answers the same structural question classifyStdinInterpreter
+// does, independent of whatever overall Verdict Classify would return
+// (a red rule elsewhere in the command must not hide the shape from a
+// caller that only wants to know whether to look at stdin at all).
+//
+// It looks where classification looks (fixup round 1, V-02): at every
+// segment of the command line, with the program name normalised
+// (`C:\...\PowerShell.EXE` is `powershell`), and inside the launchers the
+// classifier unwraps (`cmd /c`, `bash -c`, `powershell -Command`, `start`),
+// because a wrapped interpreter inherits the session's stdin. A launcher
+// nested deeper than the classifier follows is reported as reading stdin:
+// what it runs could not be resolved, so its stdin must not pass unjudged.
+func ReadsStdinScript(command string) bool {
+	return readsStdinScriptAtDepth(command, 0)
+}
+
+func readsStdinScriptAtDepth(command string, depth int) bool {
+	for _, p := range splitShellParts(command) {
+		// Only the first command of each pipeline inherits the session's
+		// stdin; one after a `|` reads the previous command's output
+		// (fixup round 2, V-08).
+		if !p.head {
+			continue
+		}
+		part := normalizeProgramPart(p.text)
+		if _, ok := classifyStdinInterpreter(part); ok {
+			return true
+		}
+		if _, inner, ok := unwrapCommandWrapper(part); ok && strings.TrimSpace(inner) != "" {
+			if depth >= maxCommandWrapperDepth || readsStdinScriptAtDepth(inner, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// normalizeProgramPart rewrites the program at the start of one command
+// segment to its bare name: a surrounding pair of double quotes, a
+// directory path and an .exe/.cmd/.bat/.com suffix are dropped, so every
+// rule keyed on a program name sees `powershell` for `powershell.exe`,
+// `"C:\Program Files\PowerShell\pwsh.exe"` or `PowerShell.EXE`. The
+// rest of the segment is kept as it was.
+func normalizeProgramPart(part string) string {
+	trimmed := strings.TrimLeft(part, " \t")
+	var prog, rest string
+	if strings.HasPrefix(trimmed, "\"") {
+		end := strings.IndexByte(trimmed[1:], '"')
+		if end < 0 {
+			return part
+		}
+		prog, rest = trimmed[1:1+end], trimmed[2+end:]
+	} else {
+		prog = firstWord(trimmed)
+		rest = trimmed[len(prog):]
+	}
+	name := programBaseName(prog)
+	if name == prog && !strings.HasPrefix(trimmed, "\"") {
+		return part
+	}
+	if name == "" {
+		return part
+	}
+	return name + rest
+}
+
+// programBaseName drops a directory path and an executable suffix.
+func programBaseName(prog string) string {
+	if i := strings.LastIndexAny(prog, `/\`); i >= 0 {
+		prog = prog[i+1:]
+	}
+	lower := strings.ToLower(prog)
+	for _, ext := range []string{".exe", ".cmd", ".bat", ".com"} {
+		if strings.HasSuffix(lower, ext) && len(prog) > len(ext) {
+			return prog[:len(prog)-len(ext)]
+		}
+	}
+	return prog
+}
+
 // ── interpreters reading stdin (R4 F-03) ──
 
 // stdinInterpreterNames are the interpreters whose no-payload launch is a
@@ -300,11 +404,11 @@ func classifyStdinInterpreter(part string) (Verdict, bool) {
 	case first == "python" || first == "python3" || first == "perl" || first == "node" || first == "nodejs" || first == "ruby":
 		stdin = scriptInterpreterReadsStdin(rest)
 	case first == "powershell" || first == "pwsh":
-		stdin = powerShellReadsStdin(rest)
+		stdin = powerShellReadsStdin(first, rest)
 	default: // cmd
 		stdin = cmdReadsStdin(rest)
 	}
-	if !stdin {
+	if !stdin || asksOnlyForInfo(first, rest) {
 		return Verdict{}, false
 	}
 	return Verdict{
@@ -313,6 +417,103 @@ func classifyStdinInterpreter(part string) (Verdict, bool) {
 		Reason:  first + " reads commands from the standard input in this form — what arrives on stdin is not checked by the command classifier",
 		Matched: true,
 	}, true
+}
+
+// asksOnlyForInfo reports whether an interpreter launch carries a help,
+// version or query switch: such a launch prints and exits without reading
+// a script (fixup round 2, V-08), so `python --version` is neither a
+// stdin reader nor a stdin-interpreter warning. Single-letter switches are
+// matched exactly, because their case matters (python -V is the version,
+// -v is verbose); PowerShell and cmd switches are case-insensitive.
+//
+// An informational switch counts only when the same launch names no
+// stdin-reading form (fixup round 3, V-11): `powershell -Version 2.0
+// -Command -` reads its script from stdin, whatever else it says. And
+// `-Version` is a query only for PowerShell 7 alone (`pwsh -Version`,
+// `pwsh -v`): for Windows PowerShell, `powershell.exe -Version <n>`
+// selects the engine to run, and a bare launch with it reads stdin.
+func asksOnlyForInfo(first, rest string) bool {
+	toks := tokens(rest)
+	// PowerShell 7 documents `pwsh -Version` (-v) as a terminal query that
+	// ignores every other parameter, a nominal `-Command -` included, so
+	// it is decided before any stdin form (fixup round 4, V-13). Only for
+	// pwsh: Windows PowerShell's -Version <n> selects an engine.
+	if first == "pwsh" {
+		for _, tok := range toks {
+			if isPwshVersionSwitch(tok) {
+				return true
+			}
+		}
+	}
+	if namesStdinForm(first, rest) {
+		return false
+	}
+	var exact, folded []string
+	folded = []string{"--version", "--help"}
+	switch first {
+	case "python", "python3":
+		exact = []string{"-V", "-VV", "-h", "-?"}
+	case "node", "nodejs":
+		exact = []string{"-v", "-h"}
+	case "perl":
+		exact = []string{"-v", "-V", "-h"}
+	case "ruby":
+		exact = []string{"-v", "-h"}
+	case "powershell":
+		folded = append(folded, "-help", "-h", "-?", "/?")
+	case "pwsh":
+		folded = append(folded, "-help", "-h", "-?", "/?")
+	case "cmd":
+		folded = append(folded, "/?", "-?")
+	}
+	for _, tok := range toks {
+		for _, s := range exact {
+			if tok == s {
+				return true
+			}
+		}
+		for _, s := range folded {
+			if strings.EqualFold(tok, s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isPwshVersionSwitch matches pwsh's -Version by every prefix pwsh's
+// own parser accepts for it: MatchSwitch(key, "version", "v") takes any
+// non-empty prefix, so -v, -ve, -ver ... all mean -Version (V-15).
+func isPwshVersionSwitch(tok string) bool {
+	name, ok := powerShellOptionName(tok)
+	if !ok {
+		return false
+	}
+	return name != "" && strings.HasPrefix("version", name)
+}
+
+// namesStdinForm reports whether an interpreter launch names standard
+// input as its script explicitly: PowerShell's `-Command -` / `-File -`,
+// a `-` script argument, or a POSIX shell's `-s`.
+func namesStdinForm(first, rest string) bool {
+	toks := tokens(rest)
+	for i, tok := range toks {
+		switch first {
+		case "powershell", "pwsh":
+			if (isPowerShellCommandFlag(tok) || isPowerShellFileFlag(tok)) && i+1 < len(toks) && stripCommandQuotes(toks[i+1]) == "-" {
+				return true
+			}
+		case "bash", "sh", "zsh", "ksh", "dash", "ash":
+			if tok == "-" || tok == "-s" {
+				return true
+			}
+		default:
+			if tok == "-" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // posixShellReadsStdin: any shell launch with no -c-style flag and no
@@ -354,15 +555,49 @@ func scriptInterpreterReadsStdin(rest string) bool {
 // an interactive console that reads stdin; `-Command -` reads the commands
 // from stdin too. A real -Command payload is the unwrapper's, and a bare
 // `-Command` with nothing after it stays the unwrapper's unreadable shell.
-func powerShellReadsStdin(rest string) bool {
+func powerShellReadsStdin(first, rest string) bool {
 	inner, ok := wrapperPayloadMatching(rest, isPowerShellCommandFlag)
 	if ok {
 		return stripCommandQuotes(inner) == "-"
 	}
-	for _, tok := range tokens(rest) {
-		if !strings.HasPrefix(tok, "-") {
+	toks := tokens(rest)
+	for i := 0; i < len(toks); i++ {
+		if powerShellOptionTakesValue(first, toks[i]) {
+			// `-ExecutionPolicy Bypass`, `-Version 2.0`: the value is
+			// the option's, not a script to run (fixup round 3, V-11).
+			i++
+			continue
+		}
+		if !strings.HasPrefix(toks[i], "-") {
 			return false // a script file or an inline command to run instead
 		}
+	}
+	return true
+}
+
+// powerShellOptionTakesValue reports whether tok is a PowerShell launch
+// parameter that consumes the next argument as its value. Prefixes are
+// accepted the way PowerShell accepts them. -Version takes a value only
+// in Windows PowerShell, where it selects the engine; pwsh's -Version
+// prints the version and takes none.
+func powerShellOptionTakesValue(first, tok string) bool {
+	name, ok := powerShellOptionName(tok)
+	if !ok {
+		return false
+	}
+	switch {
+	case name == "ep" || strings.HasPrefix(name, "ex"): // -ExecutionPolicy
+	case name == "w" || strings.HasPrefix(name, "wi"): // -WindowStyle
+	case name == "o" || name == "of" || strings.HasPrefix(name, "ou"): // -OutputFormat
+	case name == "if" || strings.HasPrefix(name, "inp"): // -InputFormat
+	case strings.HasPrefix(name, "psc"): // -PSConsoleFile
+	case strings.HasPrefix(name, "conf"): // -ConfigurationName, -ConfigurationFile
+	case name == "wd" || strings.HasPrefix(name, "wo"): // -WorkingDirectory
+	case strings.HasPrefix(name, "set"): // -SettingsFile
+	case strings.HasPrefix(name, "cus"): // -CustomPipeName
+	case first == "powershell" && (name == "v" || strings.HasPrefix(name, "ver")): // -Version <n>
+	default:
+		return false
 	}
 	return true
 }
@@ -422,6 +657,30 @@ func unwrapCommandWrapper(part string) (label, inner string, ok bool) {
 		if ok {
 			return first + " /c", inner, true
 		}
+	case "start":
+		// cmd's `start [/wait] [/b] [/min] ... ["title"] program args`:
+		// the payload is what follows the switches and the optional
+		// quoted title.
+		// The title's quotes are what mark it, so this walks the raw
+		// text rather than tokens (which drop quotes).
+		tail, titled := strings.TrimSpace(rest), false
+		for tail != "" {
+			if tail[0] == '/' {
+				tail = restAfterFirst(tail)
+				continue
+			}
+			if tail[0] == '"' && !titled {
+				end := strings.IndexByte(tail[1:], '"')
+				if end < 0 {
+					break
+				}
+				titled = true
+				tail = strings.TrimSpace(tail[2+end:])
+				continue
+			}
+			break
+		}
+		return "start", tail, true
 	}
 
 	for _, name := range []string{"invoke-expression", "iex"} {

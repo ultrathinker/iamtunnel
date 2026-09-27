@@ -394,6 +394,37 @@ func TestEnvDispositionRoundTrip(t *testing.T) {
 	}
 }
 
+// --- subsystem (1.50) -------------------------------------------------------
+
+func TestSubsystemDisposition(t *testing.T) {
+	if got := SubsystemDisposition(MarshalSubsystem(Subsystem{Name: "sftp"})); got != Forward {
+		t.Fatalf("subsystem sftp: got %s, want forward", got)
+	}
+	for _, name := range []string{"exec", "netconf", "SFTP", "sftpd", ""} {
+		if got := SubsystemDisposition(MarshalSubsystem(Subsystem{Name: name})); got != Reject {
+			t.Fatalf("subsystem %q: got %s, want reject", name, got)
+		}
+	}
+	// A malformed payload (RFC 4254 §6.5 layout violated) is rejected
+	// explicitly, the same as env's malformed payload.
+	if got := SubsystemDisposition([]byte{0, 0, 0, 99}); got != Reject {
+		t.Fatalf("subsystem malformed payload: got %s, want reject", got)
+	}
+}
+
+// TestSubsystemLookupGoesThroughSingleEntryPoint mirrors
+// TestEnvLookupGoesThroughSingleEntryPoint: LookupChannelRequest must
+// consult the payload for "subsystem", not just the table's safe-minimum
+// Reject row.
+func TestSubsystemLookupGoesThroughSingleEntryPoint(t *testing.T) {
+	if got := LookupChannelRequest("subsystem", MarshalSubsystem(Subsystem{Name: "sftp"})); got != Forward {
+		t.Fatalf("subsystem sftp via LookupChannelRequest: got %s, want forward", got)
+	}
+	if got := LookupChannelRequest("subsystem", MarshalSubsystem(Subsystem{Name: "netconf"})); got != Reject {
+		t.Fatalf("subsystem netconf via LookupChannelRequest: got %s, want reject", got)
+	}
+}
+
 // --- ApplyDisposition -------------------------------------------------------
 
 // recorder counts answers and forwards.

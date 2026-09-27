@@ -43,6 +43,14 @@ type ExecRecorder struct {
 	bytesOut    int64
 	stdinHasher hash.Hash
 	meta        Metadata
+	// chunkErr is set the first time a background write into the JSONL
+	// stream fails — today only AddBytesIn's stdin chunk, which has no
+	// error return in its caller's interface (core.Recording.AddBytesIn
+	// carries none). Finish/Abort turn a set chunkErr into an honest
+	// "aborted" instead of a silent gap in the record.
+	chunkErr error
+	// stdinPending holds stdin not yet written as a chunk (AddBytesIn).
+	stdinPending []byte
 }
 
 type execEvent struct {
@@ -53,6 +61,14 @@ type execEvent struct {
 	Data     string  `json:"data,omitempty"`
 	Status   *uint32 `json:"status,omitempty"`
 	Signal   string  `json:"signal,omitempty"`
+	// 1.50 SFTP subsystem fields (execEvent{Type: "sftp"}), see SFTPFile.
+	Op        string `json:"op,omitempty"`
+	Direction string `json:"direction,omitempty"`
+	Path      string `json:"path,omitempty"`
+	NewPath   string `json:"newPath,omitempty"`
+	Size      *int64 `json:"size,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Outcome   string `json:"outcome,omitempty"`
 }
 
 // NewExecRecorder opens the lossless writer and makes command its first,
@@ -145,13 +161,20 @@ func (r *ExecRecorder) writeChunk(stream string, p []byte) (int, error) {
 }
 
 // AddBytesIn counts stdin forwarded from the human to the exec process and
-// streams it into a SHA-256 (SPEC §6.5, IAMT-336 phase 5). The bytes
-// are intentionally not written to JSONL: PROTOCOL §8 permits only the
-// count and the hash, never an input recording. As with Recorder, calls
-// after finalization are ignored because metadata is already immutable
-// on disk. The argument is the slice that was just accepted by the
-// bridge, so a partial Write never over-counts nor feeds the wrong
-// prefix into the hash.
+// streams it into a SHA-256 (SPEC §6.5, IAMT-336 phase 5). As with
+// Recorder, calls after finalization are ignored because metadata is
+// already immutable on disk. The argument is the slice that was just
+// accepted by the bridge, so a partial Write never over-counts nor feeds
+// the wrong prefix into the hash.
+//
+// Since 1.50 the bytes are also written to the JSONL stream as a "stdin"
+// chunk: exec grants no longer close the machine's stdin (R4 F-03 is
+// gone), so what used to be a count-only channel is now a real one, and
+// PROTOCOL §8's old blanket "stdin is never recorded" is narrowed to say
+// so. A write failure here cannot stop the byte, which the bridge has
+// already forwarded by the time this runs — it is remembered in
+// chunkErr instead, and the next Finish/Abort reports it honestly rather
+// than claiming a complete recording that is missing a chunk.
 func (r *ExecRecorder) AddBytesIn(p []byte) {
 	if len(p) == 0 {
 		return
@@ -165,6 +188,47 @@ func (r *ExecRecorder) AddBytesIn(p []byte) {
 	// Streaming SHA-256: hash.Hash buffers nothing internally, it only
 	// updates its state. A 47 KB image or a 4 GB file work the same way.
 	r.stdinHasher.Write(p)
+	// Buffered up to stdinChunkMax and flushed before any other event
+	// (writeLocked), so the stream keeps its order while a stdin fed a
+	// byte at a time does not cost one JSONL line and one fsync per byte.
+	r.stdinPending = append(r.stdinPending, p...)
+	if len(r.stdinPending) >= stdinChunkMax {
+		r.flushStdinLocked()
+	}
+}
+
+// stdinChunkMax bounds the stdin bytes held before they are written.
+const stdinChunkMax = 32 * 1024
+
+// flushStdinLocked writes the buffered stdin as one "stdin" chunk. A
+// failure is remembered in chunkErr (see AddBytesIn).
+func (r *ExecRecorder) flushStdinLocked() {
+	if len(r.stdinPending) == 0 {
+		return
+	}
+	data := base64.StdEncoding.EncodeToString(r.stdinPending)
+	r.stdinPending = r.stdinPending[:0]
+	if err := r.writeEventLocked(execEvent{Type: "chunk", Stream: "stdin", Data: data}); err != nil && r.chunkErr == nil {
+		r.chunkErr = err
+	}
+}
+
+// SFTPFile appends one completed SFTP subsystem operation to the exec-style
+// JSON stream (1.50): a file transfer (op "open", direction "upload" or
+// "download") or a mutation (op "remove"/"rename"/"mkdir"/"rmdir"/
+// "setstat"/"fsetstat"). direction and newPath are omitted when they do
+// not apply; size < 0 omits the size field (an operation with no byte
+// count, e.g. remove). sha256 is the literal string "non-sequential" when
+// a write did not run sequentially from offset 0, per the SFTP proxy's
+// tracking rule.
+func (r *ExecRecorder) SFTPFile(op, direction, path, newPath string, size int64, sha256, outcome string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ev := execEvent{Type: "sftp", Op: op, Direction: direction, Path: path, NewPath: newPath, SHA256: sha256, Outcome: outcome}
+	if size >= 0 {
+		ev.Size = &size
+	}
+	return r.writeLocked(ev)
 }
 
 func (r *ExecRecorder) ExitStatus(status uint32) error {
@@ -179,7 +243,13 @@ func (r *ExecRecorder) ExitSignal(signal string) error {
 	return r.writeLocked(execEvent{Type: "exit-signal", Signal: signal})
 }
 
+// writeLocked writes one event, after any stdin still buffered.
 func (r *ExecRecorder) writeLocked(event execEvent) error {
+	r.flushStdinLocked()
+	return r.writeEventLocked(event)
+}
+
+func (r *ExecRecorder) writeEventLocked(event execEvent) error {
 	if r.closed || r.file == nil {
 		return ErrRecorderClosed
 	}
@@ -220,6 +290,12 @@ func (r *ExecRecorder) finalize(status string, aborted bool, reason string, eof 
 	defer r.mu.Unlock()
 	if r.closed {
 		return nil
+	}
+	// Stdin still buffered belongs in the record on every ending, an
+	// aborted one (which writes no eof) included.
+	r.flushStdinLocked()
+	if r.chunkErr != nil && !aborted {
+		status, aborted, reason = "aborted", true, "stdin recording failed: "+r.chunkErr.Error()
 	}
 	// The final eof goes first, but a failure to write it no longer ends
 	// this function early (M-9b, code review 23.09.2026, F-15).

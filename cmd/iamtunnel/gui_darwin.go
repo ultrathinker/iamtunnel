@@ -146,6 +146,8 @@ func runGUI(s *streams) int {
 	// "not running" until the poller's first tick — the same cheap
 	// control-status dial the poller repeats every interval afterwards.
 	snap.Server = pollServerStatus(serverDir)
+	guiSetupEnv = s.env
+	snap.Server.AutostartKnown, snap.Server.Autostart, snap.Server.NeedsConfirm = guiServerSetupFacts(s.env, serverDir)
 
 	updates := make(chan ui.LiveUpdate)
 	done := make(chan struct{})
@@ -234,6 +236,14 @@ func runGUI(s *streams) int {
 			},
 			ServerStart: func() (string, error) { return guiServerStart(serverDir, nil) },
 			ServerStop:  func() (string, error) { return guiServerStop(serverDir) },
+			ServerAutostart: func(enable bool) (string, error) {
+				defer guiSetupFactsStale.Store(true)
+				return guiServerAutostart(serverDir, enable, nil)
+			},
+			ServerConfirmSetup: func() (string, error) {
+				defer guiSetupFactsStale.Store(true)
+				return guiServerConfirmRegistration(s.env, serverDir)
+			},
 			AdminGrantWithCaps: func(person, machine, until, capability string) (string, error) {
 				return guiGrantWithCaps(clientDir, person, machine, until, capability)
 			},

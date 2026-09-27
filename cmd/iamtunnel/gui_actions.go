@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -348,6 +349,37 @@ func unreachableStatusText(err error) string {
 	return "unknown — this machine's own status could not be checked: " + err.Error()
 }
 
+// guiSetupEnv is the environment the Server tab's setup facts are read
+// with (guiServerSetupFacts). The window sets it before polling starts;
+// nil, as in tests, leaves the facts unread and the tab draws nothing
+// for them.
+var guiSetupEnv map[string]string
+
+// guiSetupFactsStale asks the next poll tick to read the setup facts at
+// once instead of waiting for its turn: set after an action changed them.
+var guiSetupFactsStale atomic.Bool
+
+// serverSetupFactsCache reads the setup facts every few ticks, not every
+// tick: the autostart fact is a Task Scheduler query, a process of its
+// own, and it changes only when somebody presses the checkbox.
+type serverSetupFactsCache struct {
+	ticks                                   int
+	read                                    bool
+	autostartKnown, autostart, needsConfirm bool
+}
+
+func (c *serverSetupFactsCache) apply(st *ui.ServerState, dir string) {
+	if guiSetupEnv == nil {
+		return
+	}
+	if !c.read || c.ticks%4 == 0 || guiSetupFactsStale.Swap(false) {
+		c.autostartKnown, c.autostart, c.needsConfirm = guiServerSetupFacts(guiSetupEnv, dir)
+		c.read = true
+	}
+	c.ticks++
+	st.AutostartKnown, st.Autostart, st.NeedsConfirm = c.autostartKnown, c.autostart, c.needsConfirm
+}
+
 // startServerStatusPoll asks the three questions a tick can answer and
 // sends the answers — and only the answers — on updates every interval,
 // until done is closed. It owns its own goroutine and ticker.
@@ -362,12 +394,14 @@ func startServerStatusPoll(dir, clientDir string, interval time.Duration, update
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		var facts serverSetupFactsCache
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
 				next := ui.LiveUpdate{Server: pollServerStatus(dir)}
+				facts.apply(&next.Server, dir)
 				// WHEN THIS TICK LOOKED, stamped before its first read of
 				// the saved connection and not only before the held
 				// request (R1-CX F-16): a forget or a switch of gateway
@@ -1576,6 +1610,28 @@ func guiAgentPrompt(clientDir, machine string) (string, error) {
 	}
 	sshLine := fmt.Sprintf(`ssh -i "%s" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="%s" -p %d -l %s:%s %s "hostname"`,
 		client.KeyPath(clientDir), agentKnownHosts, cs.Port, cs.Person, machine, host)
+	// scp (1.50): the same key, known_hosts and port options as the ssh
+	// line above. The user goes in -o User=..., not user@host: the name is
+	// "person:machine", and scp reads the first ':' after the host part as
+	// the start of the remote path. An IPv6 host needs its brackets back,
+	// for the same reason.
+	//
+	// The remote path starts with a slash: /C:/TEST111/file. Modern scp
+	// speaks SFTP and treats any path that does not start with '/' as
+	// relative, prepending the remote home to it; Windows' own scp.exe
+	// knows drive letters, but scp on Linux, macOS or Git Bash turns
+	// "C:/TEST111/file" into "/C:/Users/<you>/C:/TEST111/file". The
+	// OpenSSH sftp-server on Windows takes "/C:/..." as the drive path
+	// (it is the form its own realpath answers with), so the slashed form
+	// works from every client.
+	scpHost := host
+	if strings.Contains(scpHost, ":") {
+		scpHost = "[" + scpHost + "]"
+	}
+	scpOptions := fmt.Sprintf(`-i "%s" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="%s" -o User=%s:%s -P %d`,
+		client.KeyPath(clientDir), agentKnownHosts, cs.Person, machine, cs.Port)
+	scpUpload := fmt.Sprintf(`scp %s "local-file" %s:/C:/TEST111/file`, scpOptions, scpHost)
+	scpDownload := fmt.Sprintf(`scp %s %s:/C:/TEST111/file "local-file"`, scpOptions, scpHost)
 	return fmt.Sprintf(`You have temporary, recorded SSH access to the Windows machine %q through the iamtunnel gateway. Everything you run and everything it prints is recorded, and the administrator can end the access at any moment.
 
 Run each command as one non-interactive ssh call:
@@ -1584,18 +1640,21 @@ Run each command as one non-interactive ssh call:
 
 Replace the last quoted argument ("hostname") with your command. On the machine it runs in the default OpenSSH shell (usually Windows PowerShell), so write Windows commands.
 
-Files: scp and sftp are not available. Send data as base64 on standard input and read it with $input (not [Console]::In, which hangs on Windows OpenSSH for larger input):
+Files: copy them with scp, with the same key, known_hosts and port as the ssh call. Replace "local-file" and the remote path; write the remote path with forward slashes and a slash before the drive letter, like /C:/TEST111/file:
 
-  upload:   base64 of the local file | <the ssh call above with this command>  '$b = -join $input; [IO.File]::WriteAllBytes("C:\Users\Public\file.bin", [Convert]::FromBase64String($b))'
-  download: <the ssh call above with this command>  '[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\file.bin"))'  > file.b64, then decode it locally (PowerShell ends the output with CR LF: strip it first, e.g. tr -d '\r\n' < file.b64 | base64 -d > file.bin)
+  upload:   %s
+  download: %s
 
-Check the SHA-256 of both copies. A note that the session is recorded is printed to standard error, never into a command's output.
+Piping data to a command is fine too, for example a script on standard input: type script.ps1 | <the ssh call with the command "powershell -NoProfile -Command -">
+
+A note that the session is recorded is printed to standard error, never into a command's output or a copied file.
 
 Rules:
 - One command per call; you have no interactive terminal.
 - If ssh is refused or the host key does not match, stop and tell the person. Do not retry with other names, keys, ports or options, and never turn host key checking off.
 - Do not change accounts, services, firewall or security settings on the machine unless the person explicitly asked for exactly that.
-`, machine, sshLine), nil
+- Every command and file transfer is compared with the declared goal; if one is held for approval, tell the person the approval-id and wait.
+`, machine, sshLine, scpUpload, scpDownload), nil
 }
 
 // guiClientRiskApprove lifts one pending "ask"-mode refusal (IAMT-394):

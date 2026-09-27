@@ -25,7 +25,17 @@ machine with `E_RISK_CLASSIFIER_UNAVAILABLE`. The human sees the reason
 timeout/`5xx`) and is offered a switch to `rules` or `both` in config (with a
 restart) or `iamtunnel admin risk mode log`/`warn`. A red local verdict in
 `both` blocks immediately; the external call finishes asynchronously.
-Interactive shells are never classified. To check a command ahead of time,
+Interactive shells are never classified. An interpreter reading a script
+from stdin (`powershell -Command -`, `python -`, and the like) is judged
+together with the whole script; a script longer than 1 MiB, not finished
+within 60 s, or not text can't be judged, and under `ask`/`block` such a
+command is refused with no approval-id (`session.drop` with
+`E_STDIN_SCRIPT_UNJUDGED`, exit 126 to the human, with the advice to send
+the script as a file over `scp` or as a finite text script under 1 MiB);
+it can't be approved, because an approval would also release the part that
+wasn't seen. Under `log`/`warn` it goes through, with the reason in
+`session.risk.details.stdinScriptUnjudged`; everything the human sent is in
+the session recording either way. To check a command ahead of time,
 run `iamtunnel admin risk check "<command>"` — it's sent to the gateway and
 classified by the same rules a real session would face; green exits 0,
 yellow and red exit non-zero. Don't turn the check off over yellow entries —
@@ -72,7 +82,11 @@ host itself.
   a port ≥ 1024.
 - Any other inbound port ($\le 1023$ or arbitrary).
 - Any forwarding or proxy port: v1 forbids direct port forwarding
-  (`direct-tcpip`, `tcpip-forward`), agent forwarding and SFTP subsystems.
+  (`direct-tcpip`, `tcpip-forward`), agent forwarding and every subsystem
+  except `sftp`. The `sftp` subsystem (and modern `scp`, which runs through
+  it) has been allowed since 1.50, over the same port: file operations are
+  logged (`session.file`), and the ones that change something are judged by
+  the risk classifier (PROTOCOL §4.3). Through 1.49, SFTP was forbidden too.
   Every machine and client connection goes through the single `2222/tcp`
   port.
 
@@ -1311,10 +1325,24 @@ the machine's name in `actor` and the session id in `object`. `recording.export`
 — a window event, not the gateway's: a person exported a session's text to
 files (IAMT-342); look for it in whichever role's journal the window was
 running as, with the export folder path in `details` and who exported it in
-`actor`.
+`actor`. `session.file` (1.50) — one file operation of the `sftp` subsystem:
+a closed file (`op:"open"`, upload or download), `remove`, `rename`,
+`mkdir`, `rmdir`, `setstat`/`fsetstat`, `symlink`/`hardlink`, `copy`
+(machine-side copy, extension `copy-data`: `path` is the source, `newPath`
+the destination, `requestedLength` how much was requested; no size, because
+the machine never reports one, and the destination file's close is written
+with no `size` and `sha256:"not computed: written by copy-data"`), and
+`extension` (an SFTP extension the gateway doesn't parse; `path` is its
+name; the machine's `SSH_FXP_EXTENDED_REPLY` counts as a success). The
+gateway writes it; `details` carries `sessionId`, `op`, `path`, `outcome`,
+and on a file transfer `direction`/`size`/`sha256` (or `"non-sequential"`),
+and on a rename `newPath`. `result` is `ok`, `failed` (the machine answered
+with an error) or `denied` (the gateway didn't let the operation through
+under `risk_action`; the reason is in that session's `session.risk`, and
+`outcome` carries the `approval-id`).
 
 ```iamtunnel-runbook-events-v1
-{"written":["admin.op","auth.failure","door.close","door.open","door.sanitize","grant.revoke","hostkey.mismatch","hostkey.rotate","log.rotate","machine.connected","machine.disconnected","machine.rejected","recording.export","risk.approval","session.drop","session.risk","session.start","session.stop","session.watch"],"notWrittenThisBuild":[]}
+{"written":["admin.op","auth.failure","door.close","door.open","door.sanitize","grant.revoke","hostkey.mismatch","hostkey.rotate","log.rotate","machine.connected","machine.disconnected","machine.rejected","recording.export","risk.approval","session.drop","session.file","session.risk","session.start","session.stop","session.watch"],"notWrittenThisBuild":[]}
 ```
 
 ---
@@ -2068,7 +2096,8 @@ following checks by hand (SPEC §8):
 | 9 | **Stale door cleanup (BSOD)** | Simulate a power failure (leave an `iamtunnel-door=` line in the file) and run `iamtunnel server start`. | `SweepStale` runs before dialing the gateway: the door line is removed, other keys preserved byte-for-byte. |
 | 10 | **One tunnel per REGISTRATION** (not per machine, since 1.4) | Under ONE account, start a second `iamtunnel server start` process. | The second process never reaches the gateway: `iamtunnel server start: a server is already running for this machine (data dir C:\Users\<you>\AppData\Local\iamtunnel\server) — stop it first.`, exit code 2; `iamtunnel server status` shows the first process `running`. If a second connection with the same machine key somehow reaches the gateway (e.g. a copied data directory on another computer), the gateway refuses it: `events.jsonl` shows `"type":"machine.rejected"` with `result:"E_MACHINE_ALREADY_ONLINE"`. A reconnect does NOT evict the first connection: after a network drop, the machine returns only once the gateway removes the old connection itself (up to ~60 s, three missed keepalives), and until then its attempts show as `machine.rejected`. 1.4 control: a SECOND registration's server, run under a different account on the same machine, works fine and doesn't interfere with the first — different machine keys, different directories. |
 | 11 | **Recording disk limit** | Fill the gateway's partition to 95% and try to open a session from a client. | The person gets `Access to this machine is currently unavailable.`; entry without recording is refused. In `events.jsonl`, look for `"type":"session.drop"` with `result` starting `recording: disk full beyond refuse threshold`; `E_RECORDING_DISK_FULL` is an internal code and is never written literally. |
-| 12 | **Forbidden channels blocked** | Try `sftp`, `scp`, or port forwarding `ssh -L 8080:localhost:80`. | The channel is refused immediately. In `events.jsonl`, look for `"type":"session.drop"` with `result:"E_SSH_SUBSYSTEM_FORBIDDEN"` for SFTP/subsystem, or `result:"E_SSH_FORWARD_FORBIDDEN"` for `direct-tcpip`/`tcpip-forward`. |
+| 12 | **Forbidden channels blocked** | Try to open a subsystem other than `sftp` (`ssh -s -p 2222 <person>:<machine>@gw.example.com netconf`), or port forwarding `ssh -L 8080:localhost:80`. | The request is refused, and the channel stays usable. In `events.jsonl`, look for `"type":"session.drop"` with `result:"E_SSH_SUBSYSTEM_FORBIDDEN"` for the subsystem, or `result:"E_SSH_FORWARD_FORBIDDEN"` for `direct-tcpip`/`tcpip-forward`. (Through 1.49, `sftp` and `scp` were refused the same way; since 1.50 they're allowed — see row 12a.) |
+| 12a | **Files over `scp`/`sftp` (since 1.50)** | Copy a file to the machine: `scp -o User=<person>:<machine> -P 2222 file gw.example.com:/C:/TEST111/file`, then back. Under `ask`, with a target the recording doesn't fit, repeat the upload. | The copy goes through. In `events.jsonl`: `"type":"session.file"` with `op:"open"`, `direction` upload/download, `size` and `sha256` (check against `Get-FileHash` on the machine); the session recording has `{"type":"sftp",...}` lines. An operation the classifier holds: `scp` prints "Permission denied", with the same message plus an `approval-id` one line above; the journal shows `session.risk` with `details.subsystem:"sftp"` and `session.file` with `result:"denied"`; after `iamtunnel admin risk approve <id>` the same operation goes through once. |
 
 ## IAMT-402 / IAMT-403 operator procedure
 

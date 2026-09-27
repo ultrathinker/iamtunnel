@@ -58,6 +58,17 @@ type HistoryRow struct {
 // The three facts the machine's owner must see without hunting: is anyone in, who
 // exactly, until when — and is the session being recorded.
 type ServerState struct {
+	// AutostartKnown and Autostart: whether this registration starts
+	// itself at sign-in (the Windows logon task "server install" makes).
+	// Known only where it could be asked; unknown draws no checkbox.
+	AutostartKnown bool
+	Autostart      bool
+	// NeedsConfirm: the registration was made before the enrolment
+	// anchor existed (R4 F-04), so the elevated start refuses it until
+	// the setup is confirmed once. True only when the anchor is really
+	// missing, never on a read that merely failed.
+	NeedsConfirm bool
+
 	// Waiting reports that Start was pressed and the tunnel to the
 	// gateway is up: the machine is reachable for a booked specialist.
 	Waiting bool

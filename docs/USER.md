@@ -117,6 +117,20 @@ on every screen, including ones where rights didn't matter. Now, if a
 button didn't work because of rights, the program says so in a line right
 under that button.
 
+There's also a separate window for this. Press **Start**, **Register this
+machine**, **Confirm setup** or the autostart checkbox below without
+administrator rights, and a small window opens on its own, asking: *"…needs
+administrator rights, and this window is running without them. Restart the
+program as administrator?"* Answering **Yes** restarts the program elevated;
+Windows shows its own consent prompt as usual. Answering **No** just closes
+the window and leaves the action undone.
+
+One more small thing you'll notice throughout the program: a status line
+that's too long to fit is no longer just cut off. It ends with a **"Show
+all"** link that opens the full text in its own window, where it can be
+read, selected and copied — useful when the part that matters (say, the fix
+for an error) used to be the part that got cut.
+
 ### Step 4. Activate the setup code
 - **In the window:** go to the **Set up** tab, paste the code into the
   single field, and press the button. Before anything happens, a short line
@@ -131,12 +145,17 @@ under that button.
 The program contacts the gateway and confirms its identity. Wait for a
 success message.
 
-### Step 5. One command to finish
-Once setup succeeds, turn on autostart. **The window doesn't have a button
-for this yet** — do it with one command, in the same administrator
-PowerShell window (see below). After this, the computer comes online on its
-own — every time you log in, remote desktop included — with no need to keep
-the program's window open.
+### Step 5. Turn on autostart
+Once setup succeeds, turn on autostart. On the **Server** tab, below the
+machine's status, there's a checkbox: **"Start the agent automatically when
+I sign in to Windows."** It's **off by default** — the program is meant to
+be started for one occasion, and a machine that keeps coming back reachable
+after every reboot is a deliberate choice, not the default. Tick it (it
+needs administrator rights, so it may bring up the restart-as-administrator
+window from Step 3), and the computer comes online on its own from then
+on — every time you log in, remote desktop included — with no need to keep
+the program's window open. Untick it to go back to starting the agent by
+hand.
 
 The **Start** button on the **Server** tab only starts the server **for
 this session** — it won't come back after a reboot. That's not the same as
@@ -146,14 +165,26 @@ The autostart this creates is **yours personally**: it fires when you
 specifically log in, and runs under your own account. A colleague on the
 same computer has their own, separate one. No password is stored anywhere.
 
-This isn't a formality. If you stop at pressing **Start**, everything looks
-fine — until the next morning, after a reboot, when "the computer is
-connected" stops being true.
+This isn't a formality. If you stop at pressing **Start** and never tick the
+checkbox, everything looks fine — until the next morning, after a reboot,
+when "the computer is connected" stops being true.
 
-The command:
+**From the command line, as an alternative** (administrator PowerShell):
 ```powershell
 & "C:\iamtunnel\iamtunnel.exe" server install
 ```
+To turn it back off: `server uninstall`. These are the same two actions the
+checkbox performs; use whichever is more convenient.
+
+**If your registration predates this version.** A registration set up by an
+older copy of the program is sometimes missing a record the agent now
+expects before it will start. When that's the case, the Server tab shows a
+box titled **"This machine was set up by an older version of the program"**
+with a **Confirm setup** button. One press (administrator rights required)
+fills in the missing record, and the agent can start normally from then on;
+until you press it, **Start** refuses. This only appears for a registration
+that genuinely needs it — an ordinary, up-to-date registration never shows
+this box.
 
 ### How many steps is this now
 **Before:** tell the administrator your computer's name and your Windows
@@ -163,9 +194,9 @@ true after the very next reboot. All of this, once per computer, leaving no
 room for a second person on the same machine.
 
 **Now:** paste one string, read what it's about to do, press the button —
-and run one command at the end. No name typed by hand, a result that
-survives a reboot, and as many setups on one computer as there are people
-working on it.
+and tick one checkbox. No name typed by hand, a result that survives a
+reboot, and as many setups on one computer as there are people working on
+it.
 
 ### What you'll see, and what the person connecting will see
 - **You'll see:** in the window, a green activity indicator and a note that
@@ -511,18 +542,41 @@ of time what will be typed and run, so there's nothing to evaluate. A
 single command (`exec`) is the one kind of access the gateway sees whole
 before it ever reaches the server, and so the only one it can evaluate.
 
-**A single command starts with no standard input.** Precisely because the
-gateway must see the whole command, it doesn't carry interactive input into
-such a session: the command starts on the server with input already closed,
-and a program that reads "end of input" simply exits. This also defends
-against a bypass: launching an interactive interpreter by name
-(`powershell`, `bash`, `python` with no arguments) doesn't turn into a
-hidden terminal — it simply has nothing to read. If you do write something
-to such a session's stdin, the bytes never reach the server, and the
-session ends with an `E_SSH_STDIN_FORBIDDEN` note and an on-screen hint.
-Pass data the way the command itself supports: a filename argument
-(`cmd /c type file`, `python script.py`) or an input file the command opens
-itself.
+**A single command's standard input is carried through, and seen.** Since
+version 1.50, whatever you type into a command's stdin reaches the server
+as-is and is fully captured in the session recording. If the command itself
+is an interpreter started by name with no script argument of its own
+(`powershell`, `bash`, `python` with no arguments, and the like — including
+forms like `-`, `-Command -`, `-File -`, `powershell.exe`, a full program
+path, or running through `cmd /c`), the gateway reads your stdin whole
+before sending the command — to end of input, at most 1 MiB and 60
+seconds — and hands the script to the risk classifier together with the
+command itself: this is exactly the case that used to be impossible to
+judge, and was simply forbidden. So send the whole script and close the
+input (`type script.ps1 | ssh … "powershell -Command -"` does this
+correctly). If the input doesn't finish within 60 seconds, runs longer than
+1 MiB, or isn't text, the script isn't judged, and it can't be approved —
+an approval would also release the part nobody saw. Under `ask` and
+`block`, such a command is refused with the code `E_STDIN_SCRIPT_UNJUDGED`:
+send the script as a file over `scp` and run the file, or supply it whole as
+text under 1 MiB. Under `log` and `warn` it goes through, and the reason is
+written to the journal. Commands like `python --version` or
+`powershell -Command -` used after a `|` (they don't read your stdin) start
+right away. Any other command gets its stdin without delay and without this
+kind of inspection — the data is just data.
+
+**Files move with ordinary `scp` and `sftp`.** Since version 1.50, the
+gateway passes the `sftp` subsystem (modern `scp` runs through it) on any
+access — both a full terminal and individual commands. Every file operation
+lands in the session recording and in the journal: uploads and downloads
+with size and SHA-256, deletions, renames, folder creation and removal.
+Writing, deleting, renaming, creating folders, copying on the machine's side
+and changing attributes are judged by the gateway the same way individual
+commands are — checked against the declared goal. If an operation needs
+approval, `scp` shows "Permission denied", with the same message plus an
+`approval-id` one line above, just like a command. Pass a `person:machine`
+style username with `-o User=person:machine`, and write the path on the
+machine like this: `gateway:/C:/TEST111/file`.
 
 ---
 

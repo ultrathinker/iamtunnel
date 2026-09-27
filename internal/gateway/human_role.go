@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -439,82 +437,54 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 	// known before a byte reaches the machine. Interactive shell input is a
 	// stream with no trustworthy command boundary and is intentionally not
 	// classified here.
-	var verdict risk.Verdict
-	var action RiskAction
-	var policyAction RiskAction
-	var approvalID string
-	var classification riskClassification
-	failureAction := RiskActionLog
-	failureStops := false
-	if start.exec {
-		classification = g.classifyExec(start.command, sessionGoal, sessionHistory)
-		failureAction, failureStops = g.riskClassifierFailurePolicy(classification)
-		verdict = classification.Verdict
-		verdict = failedClassifierVerdict(classification, failureAction, verdict)
-		if classification.ExternalAsync {
-			g.observeExternalRisk(sessionID, person, machine, start.command, sessionGoal, sessionHistory, classification.Local, classification.ExternalClient)
-		}
-		if verdict.Level != risk.Green || classification.ExternalError != nil {
-			action = RiskActionLog
-			if failureStops {
-				action = RiskActionBlock
-			} else if verdict.Level == risk.Green && classification.ExternalError != nil {
-				action = failureAction
-			} else if classification.failsClosed() && failureAction == RiskActionAsk {
-				policyAction, action, approvalID = g.prepareRiskActionWithPolicy(RiskActionAsk,
-					person, machine, sessionID, start.command, verdict)
-			} else {
-				policyAction, action, approvalID = g.prepareRiskAction(person, machine, sessionID, start.command, verdict)
-			}
-			eventAction := action
-			if verdict.Level != risk.Green {
-				eventAction = policyAction
-			}
-			details := riskEventDetails(sessionID, start.command, verdict, eventAction)
-			details["classifier"] = string(classification.Classifier)
-			details["goal"] = classification.Goal
-			details["goalApplied"] = classification.GoalApplied
-			if classification.Classifier != RiskClassifierRules {
-				details["local"] = classification.Local.Level.String()
-				details["externalCalled"] = classification.ExternalCalled || classification.ExternalAsync
-				details["threshold"] = risk.ExternalRiskThreshold
-				if classification.ExternalCalled {
-					details["latency_ms"] = classification.ExternalWait.Milliseconds()
-				}
-				if classification.ExternalScores != nil {
-					details["probabilities"] = classification.ExternalScores
-					details["external"] = classification.External.Level.String()
-				}
-				if classification.ExternalError != nil {
-					details["externalError"] = classification.ExternalError.Error()
-					details["failureKind"] = string(risk.ExternalFailureKindOf(classification.ExternalError))
-					if status := risk.ExternalFailureStatusCode(classification.ExternalError); status != 0 {
-						details["status"] = status
-					}
-				}
-			}
-			if approvalID != "" {
-				details["approvalId"] = approvalID
-				if action == RiskActionLog {
-					details["approval"] = "consumed"
-				}
-			}
-			result := verdict.Level.String()
-			if verdict.Level == risk.Green && classification.ExternalError != nil {
-				result = "external-error"
-			}
-			g.appendEvent(events.Event{
-				Type:    events.EventSessionRisk,
-				Actor:   person,
-				Object:  machine,
-				Result:  result,
-				Details: details,
-			})
+	var riskDec riskDecision
+	// 1.50: stdin is no longer forbidden on any exec grant (R4 F-03's
+	// prohibition is gone), but an interpreter launched with no script
+	// argument still carries nothing on its command line — the real
+	// commands are what arrives on stdin next. For exactly that shape,
+	// peek at the start of stdin before forwarding and fold it into what
+	// the classifier judges (see exec_stdin.go). stdinPreview stays nil,
+	// and nothing here waits an extra tick, for every other command.
+	classifyCommand := start.command
+	var stdinPreview *stdinPreviewReader
+	var riskExtra map[string]interface{}
+	var forcedVerdict *risk.Verdict
+	if start.exec && risk.ReadsStdinScript(start.command) {
+		// A client that waits for the exec reply before it sends a byte of
+		// stdin (golang.org/x/crypto's Session.Start, iamtunnel's own
+		// client) would otherwise never send the script: the reply
+		// normally goes out only once the machine has taken the exec. So
+		// for this one shape the person is answered now, and the machine's
+		// answer is checked later without a second reply
+		// (forwardSessionStart). A refusal below still ends the session
+		// with exit-status 126, the same as for any refused exec.
+		replyEarly(&start)
+		stdinPreview = newStdinPreviewReader(human, stdinScriptMaxBytes)
+		defer stdinPreview.stop()
+		script := stdinPreview.readScript(stdinScriptWait, stdinScriptMaxBytes)
+		classifyCommand = execStdinClassifyText(start.command, script)
+		forcedVerdict = stdinScriptVerdict(script)
+		riskExtra = map[string]interface{}{"stdinScriptBytes": script.total, "stdinScriptJudged": script.unjudged == ""}
+		if script.unjudged != "" {
+			riskExtra["stdinScriptUnjudged"] = script.unjudged
 		}
 	}
+	if start.exec {
+		riskDec = g.judgeRisk(sessionID, person, machine, classifyCommand, start.command, sessionGoal, sessionHistory, forcedVerdict, riskExtra)
+	}
+	verdict, action, policyAction, approvalID := riskDec.verdict, riskDec.action, riskDec.policyAction, riskDec.approvalID
+	classification, failureStops := riskDec.classification, riskDec.failureStops
 
+	// 1.50: an sftp subsystem session is recorded the same way an exec
+	// without a pty is — the lossless JSONL stream, not a terminal cast —
+	// with "sftp" standing in for a command line it never had.
+	isSFTP := start.subsystem == "sftp"
+	recCommand, recExec := start.command, start.exec && !start.pty
+	if isSFTP {
+		recCommand, recExec = "sftp", true
+	}
 	rec, err := g.cfg.NewRecording(SessionInfo{Person: person, Machine: machine, OSUser: *stMachine.VerifiedOSUser,
-		SessionID: sessionID, Cols: start.cols, Rows: start.rows, Exec: start.exec && !start.pty, Command: start.command})
+		SessionID: sessionID, Cols: start.cols, Rows: start.rows, Exec: recExec, Command: recCommand})
 	if err != nil {
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
@@ -522,12 +492,84 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		g.writeAndClose(human, "Access to this machine is currently unavailable.\r\n")
 		return
 	}
+	// stdinLate is set when a refused command's stdin reader was still
+	// inside a Read at the moment of refusal (fixup round 3, V-12).
+	stdinLate := false
+	if riskDec.refused() && stdinPreview != nil {
+		// Stdin the gateway read and then refused never reaches the bridge,
+		// which is where stdin is normally recorded. It is part of what the
+		// person sent, so every byte taken from the channel — past the
+		// preview cap included (V-09) — goes into the record here. The
+		// reader is sealed first, so none can be taken after this without
+		// being accounted for: either no Read is in flight and this is all
+		// of it, or one is, and it ends only when the channel closes —
+		// then finishRefused leaves the recording open and finishLateStdin
+		// records what that last Read brought before finishing it.
+		quiet, taken := stdinPreview.seal()
+		if len(taken) > 0 {
+			rec.AddBytesIn(taken)
+		}
+		stdinLate = !quiet
+	}
+	// finishRefused finalizes a refused session's recording, unless stdin
+	// is still being read (stdinLate): that recording is finished by
+	// finishLateStdin after the channel has closed.
+	finishRefused := func() error {
+		if stdinLate {
+			if hook := stdinRefusalHook.Load(); hook != nil {
+				(*hook)(stdinPreview)
+			}
+			return nil
+		}
+		if execRec, isExec := rec.(*record.ExecRecorder); isExec {
+			_ = execRec.ExitStatus(126)
+			return execRec.Finish()
+		}
+		return rec.Close()
+	}
+	finishLateStdin := func() {
+		if !stdinLate {
+			return
+		}
+		// human is closed, so the in-flight Read ends once the person's
+		// client answers the close — or, if it never does, once the whole
+		// connection is closed under it (endLateStdin, V-14).
+		rest, forced, ok := endLateStdin(stdinPreview, transport, lateStdinCloseWait, lateStdinForcedWait)
+		if len(rest) > 0 {
+			rec.AddBytesIn(rest)
+		}
+		var finishErr error
+		abortReason := ""
+		switch {
+		case !ok:
+			abortReason = "stdin was still being read after the refused session's connection was closed"
+		case forced:
+			abortReason = "the client did not complete the refused session's channel close; its connection was closed to end the stdin read"
+		}
+		if abortReason != "" {
+			finishErr = rec.Abort(abortReason)
+		} else if execRec, isExec := rec.(*record.ExecRecorder); isExec {
+			_ = execRec.ExitStatus(126)
+			finishErr = execRec.Finish()
+		} else {
+			finishErr = rec.Close()
+		}
+		if finishErr != nil || abortReason != "" {
+			// The drop itself was journaled before the person was told;
+			// a recording fault found only now gets its own line.
+			reason := abortReason
+			if finishErr != nil {
+				reason = finishErr.Error()
+			}
+			g.appendEvent(events.Event{Type: events.EventSessionDrop, Actor: person, Object: machine, Result: "recording: " + reason,
+				Details: map[string]interface{}{"sessionId": sessionID}})
+		}
+	}
 	// A command let through by an approval says so. The condition below
 	// deliberately hides a Log action, and "the policy is ask, the action
 	// became log, and there is an approval id" is the one case where that
 	// silence misleads: see riskApprovedNotice.
-	approvalUsed := policyAction == RiskActionAsk && action == RiskActionLog && approvalID != ""
-	if verdict.Level != risk.Green && action != RiskActionLog || classification.ExternalError != nil || approvalUsed {
+	if riskDec.noticeNeeded() {
 		// This is emitted before forwardSessionStart, so the warning is always
 		// visible before the target can produce command output. Writing through
 		// execRecordingWriter makes it an ordinary stderr chunk in .exec.jsonl.
@@ -540,20 +582,7 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// here exactly as it does to every other recording write in this
 		// file: a failure ends the session instead of silently letting an
 		// unwarned or unlogged command proceed to the machine.
-		var notice []byte
-		if failureStops {
-			notice = riskClassifierFailureStop(classification.Classifier, classification.ExternalError, false)
-		} else if verdict.Level == risk.Green && classification.ExternalError != nil {
-			if classification.failsClosed() {
-				notice = riskClassifierFailureWarningWithAction(classification.Classifier, classification.ExternalError, failureAction, false)
-			} else {
-				notice = riskClassifierFailureWarning(classification.Classifier, classification.ExternalError, false)
-			}
-		} else if approvalUsed {
-			notice = riskApprovedNotice(verdict, approvalID, false)
-		} else {
-			notice = riskWarningWithClassifier(verdict, policyAction, approvalID, classification.Classifier, classification.ExternalError, false)
-		}
+		notice := riskDec.notice(false)
 		var writeErr error
 		if execRec, isExec := rec.(*record.ExecRecorder); isExec {
 			_, writeErr = execRecordingWriter{rec: execRec, dst: human.Stderr()}.Write(notice)
@@ -571,16 +600,10 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		}
 	}
 	if failureStops {
-		if start.request != nil && start.request.WantReply {
+		if start.request != nil && start.request.WantReply && !start.replied {
 			_ = start.request.Reply(true, nil)
 		}
-		var finishErr error
-		if execRec, isExec := rec.(*record.ExecRecorder); isExec {
-			_ = execRec.ExitStatus(126)
-			finishErr = execRec.Finish()
-		} else {
-			finishErr = rec.Close()
-		}
+		finishErr := finishRefused()
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
 		details := classifierFailureEventDetails(sessionID, start.command, classification)
@@ -596,19 +619,14 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// session.drop that explains it.
 		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		_ = human.Close()
+		finishLateStdin()
 		return
 	}
 	if policyAction == RiskActionAsk && action == RiskActionAsk {
-		if start.request != nil && start.request.WantReply {
+		if start.request != nil && start.request.WantReply && !start.replied {
 			_ = start.request.Reply(true, nil)
 		}
-		var finishErr error
-		if execRec, isExec := rec.(*record.ExecRecorder); isExec {
-			_ = execRec.ExitStatus(126)
-			finishErr = execRec.Finish()
-		} else {
-			finishErr = rec.Close()
-		}
+		finishErr := finishRefused()
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
 		details := map[string]interface{}{
@@ -640,13 +658,14 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// session.drop that explains it.
 		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		_ = human.Close()
+		finishLateStdin()
 		return
 	}
 	if action == RiskActionBlock {
 		// The exec request was syntactically accepted, but its program is not
 		// allowed to start. Acknowledge the request and return the conventional
 		// shell status for "found but not executable" without forwarding it.
-		if start.request != nil && start.request.WantReply {
+		if start.request != nil && start.request.WantReply && !start.replied {
 			_ = start.request.Reply(true, nil)
 		}
 		// A2: finishErr used to be dropped by "_ = execRec.Finish()". It now
@@ -654,13 +673,7 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// actually ended for, instead of vanishing: the block is still the
 		// reason this session ended, a recording fault is secondary
 		// operational information for whoever reads the journal.
-		var finishErr error
-		if execRec, isExec := rec.(*record.ExecRecorder); isExec {
-			_ = execRec.ExitStatus(126)
-			finishErr = execRec.Finish()
-		} else {
-			finishErr = rec.Close()
-		}
+		finishErr := finishRefused()
 		g.aclE.Close(sess.ID, g.cfg.Now())
 		mc.finishSession()
 		details := map[string]interface{}{
@@ -671,8 +684,14 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		if finishErr != nil {
 			details["recordingError"] = finishErr.Error()
 		}
+		dropCode := "E_COMMAND_BLOCKED" // errdict:internal
+		if riskDec.stdinRefused {
+			// An unjudged stdin script (V-09): refused whatever the mode
+			// between ask and block, so it keeps its own code.
+			dropCode = stdinScriptUnjudgedCode
+		}
 		g.appendEvent(events.Event{Type: events.EventSessionDrop, Actor: person, Object: machine,
-			Result:  "E_COMMAND_BLOCKED", // errdict:internal
+			Result:  dropCode,
 			Details: details,
 		})
 		// The journal records why the session ended before the client is
@@ -680,6 +699,7 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// session.drop that explains it.
 		_, _ = human.SendRequest("exit-status", false, sshx.MarshalExitStatus(sshx.ExitStatus{Status: 126}))
 		_ = human.Close()
+		finishLateStdin()
 		return
 	}
 	// IAMT-338: say where this session is being recorded, so it can be
@@ -727,20 +747,6 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		return
 	}
 
-	// R4 F-03: an exec-only grant never carries stdin, so the machine must
-	// not sit there reading commands past the classifier. Close the target
-	// side's stdin the instant the command has been forwarded — iamtunnel's
-	// own client has always done exactly this for its exec (internal/client/
-	// execrun.go), so a real machine sees the same shape from both paths. A
-	// bare `powershell` / `bash` launched by name gets EOF and exits instead
-	// of turning into an interactive, unclassified shell. Bytes the person
-	// writes anyway are refused by execStdinGuard below, not silently
-	// dropped: the session ends with a named code rather than a mystery.
-	// (The CloseWrite itself is best-effort; the guard is the enforcement.)
-	if start.exec && sess.ExecOnly {
-		_ = nestedSession.CloseWrite()
-	}
-
 	// IAMT-210: one session.start per session, period. The exec case
 	// used to ALSO append a second session.start with
 	// Actor:"exec", Object:<command>, which `sessions history`
@@ -764,6 +770,9 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// THREATS: journal output). The full command stays in the
 		// session record, which is 0600.
 		details["command"] = risk.ScrubCommand(start.command)
+	}
+	if isSFTP {
+		details["subsystem"] = "sftp"
 	}
 	g.appendEvent(events.Event{Type: events.EventSessionStart, Actor: person, Object: machine, Result: "ok",
 		Details: details})
@@ -797,9 +806,12 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 	}
 	// exec: the banner goes to stderr, so a command's own stdout stays exactly
 	// what the command printed (an agent piping it into a file or a hash got
-	// the banner mixed in). A terminal shows stderr just the same.
+	// the banner mixed in). A terminal shows stderr just the same. sftp (1.50)
+	// goes to stderr for the same reason exec does, and for one more: the
+	// data stream is the SFTP binary protocol itself, and a human-readable
+	// line prepended to it would not be a banner, it would be corruption.
 	banner := []byte(fmt.Sprintf("This session is recorded. Machine %s, until %s.\r\n", machine, until))
-	if start.exec {
+	if start.exec || isSFTP {
 		_, _ = human.Stderr().Write(banner)
 	} else {
 		_, _ = human.Write(banner)
@@ -965,23 +977,46 @@ func (g *Gateway) serveHumanSession(person, machine string, human ssh.Channel, h
 		// the capture must see the bytes before drainedAfter gates them.
 		bridgeTarget = captureStream{Stream: bridgeTarget, c: respCap}
 	}
-	if start.exec && sess.ExecOnly {
-		// R4 F-03: the CloseWrite above tells the machine there is no more
-		// stdin; this guard is what tells the PERSON. A plain swallow would
-		// be wrong twice over — bytes dropped silently, and Bridge would read
-		// a clean EOF-ish end as an ordinary end of input — so the first
-		// stdin byte instead breaks the copy with errExecStdinForbidden, the
-		// same way any other bridging fault breaks it, and the drop below
-		// journals the named code.
-		bridgeTarget = &execStdinGuard{Stream: bridgeTarget, stderr: human.Stderr()}
+	// 1.50: the sftp subsystem's data stream is the SFTP wire protocol
+	// itself. sftpTargetStream parses it in both directions without
+	// rewriting a byte on the success path, judging mutating requests the
+	// way an exec command is judged and journaling every completed file
+	// operation (sftp_session.go).
+	var sftpProxyRec core.Recording = rec
+	var sftpProxy *sftpProxy
+	if isSFTP {
+		execRec, _ := rec.(*record.ExecRecorder)
+		var notices io.Writer = human.Stderr()
+		if execRec != nil {
+			notices = execRecordingWriter{rec: execRec, dst: human.Stderr()}
+		}
+		sftpProxy = newSFTPProxy(g, person, machine, sessionID, sessionGoal, sessionHistory, execRec, notices)
+		defer sftpProxy.stop()
+		bridgeTarget = newSFTPTargetStream(bridgeTarget, sftpProxy)
+		// The raw protocol bytes are not content worth storing or hashing
+		// as if they were an exec's stdin/stdout — SFTPFile's structured
+		// per-operation entries are the record that matters here.
+		sftpProxyRec = sftpBridgeRecording{real: rec}
 	}
 	if stderrDrained != nil {
 		bridgeTarget = drainedAfter{Stream: bridgeTarget, drained: stderrDrained}
 	}
-	bridgeErr := core.Bridge(mc.ctx, revocableHuman{Channel: human, revoked: revoked}, bridgeTarget, rec, targetDrained)
+	var bridgeHuman ssh.Channel = human
+	if stdinPreview != nil {
+		// The peek above already took ownership of human's Read; every
+		// byte it saw, and every byte after it, must flow through the
+		// same reader so nothing is lost or read twice.
+		bridgeHuman = stdinPreviewStream{Channel: human, reader: stdinPreview}
+	}
+	bridgeErr := core.Bridge(mc.ctx, revocableHuman{Channel: bridgeHuman, revoked: revoked}, bridgeTarget, sftpProxyRec, targetDrained)
 	closeAfterMachineDrain(bridgeErr, mreqsDrained, human, nestedSession)
 	if stderrDrained != nil {
 		<-stderrDrained
+	}
+	if sftpProxy != nil {
+		// Files still open when the session ended are journaled now,
+		// before the recording is finalized.
+		sftpProxy.finish()
 	}
 	if execRec, isExec := rec.(*record.ExecRecorder); isExec && bridgeErr == nil {
 		if err := execRec.Finish(); err != nil {
@@ -1180,10 +1215,12 @@ func (g *Gateway) proxyChannelRequests(src <-chan *ssh.Request, fwdTo, human ssh
 		}
 		// The program was started by the request awaitSessionStart
 		// returned - with a pty-req before it or without (IAMT-454) - and
-		// was classified there: a second shell or exec is refused.
-		if r.Type == "shell" || r.Type == "exec" {
+		// was classified there: a second shell, exec or subsystem is refused.
+		if r.Type == "shell" || r.Type == "exec" || r.Type == "subsystem" {
 			_ = sshx.ApplyDisposition(r.Type, r.WantReply, r.Reply, sshx.Reject, nil)
-			g.recordSSHRequestReject(person, machine, r.Type, false)
+			// A second subsystem is refused because the session has
+			// started, not because subsystems are forbidden (1.50).
+			g.recordSSHRequestRejectCode(person, machine, "E_SSH_SESSION_ALREADY_STARTED", r.Type) // errdict:internal
 			continue
 		}
 		if d == sshx.Reject {
@@ -1288,7 +1325,19 @@ type sessionStart struct {
 	pty     bool
 	exec    bool
 	command string
-	request *ssh.Request
+	// subsystem is "sftp" when the session was started by an accepted
+	// `subsystem` request (1.50) rather than by `shell`/`exec`. Every
+	// other field keeps its exec/shell meaning; subsystem sessions carry
+	// no command and are never PTY.
+	subsystem string
+	request   *ssh.Request
+	// replied is set by replyEarly: the person has already been told the
+	// exec was accepted, so no path below may reply to request again
+	// (1.50, exec_stdin.go).
+	replied bool
+	// forwarded is set when awaitSessionStart itself forwarded request to
+	// the machine and relayed the answer (the sftp subsystem, 1.50).
+	forwarded bool
 	// denyCode is set only when awaitSessionStart itself has already
 	// written a refusal to human's stderr and closed human (A2: an
 	// exec-only grant's pty-req/shell no longer waits out the rest of
@@ -1319,15 +1368,6 @@ func shellForbiddenMessage() []byte {
 // happened, why, and the two ways that do work.
 func shellNeedsTerminalMessage() []byte {
 	return []byte("[iamtunnel] E_SSH_SHELL_NO_PTY: a shell is opened only in a terminal — without one, what the program writes to stderr could be neither shown to you nor recorded.\r\nAsk for a terminal (ssh -t), or run one command: iamtunnel client exec <machine> -- <command>.\r\n")
-}
-
-// execStdinForbiddenMessage is F-03's line for the person whose bytes the
-// gateway refused to carry, in the same shape as shellForbiddenMessage:
-// what happened, why, and the way that does work. execStdinGuard writes it
-// to human's stderr before failing the copy, so it reaches the terminal
-// even though the session is being torn down around it.
-func execStdinForbiddenMessage() []byte {
-	return []byte("[iamtunnel] E_SSH_STDIN_FORBIDDEN: this grant allows individual commands only — the gateway does not carry stdin to them, so what you typed did not reach the machine.\r\nRun the command like this: iamtunnel client exec <machine> -- <command>.\r\n")
 }
 
 // defaultPTYColumns/defaultPTYRows are substituted for a pty-req's 0x0 size
@@ -1479,6 +1519,35 @@ func awaitSessionStart(reqs <-chan *ssh.Request, target, human ssh.Channel, time
 				}
 				return sessionStart{cols: cols, rows: rows, pty: pty, exec: true, command: exec.Command, request: r}, true
 			}
+			if r.Type == "subsystem" {
+				// 1.50: the one subsystem allowed through, "sftp", starts a
+				// session exactly as shell/exec do. Any other name (d is
+				// Reject — sshx.SubsystemDisposition already checked the
+				// payload) is refused here and now, the same shape as an
+				// exec whose payload does not parse, rather than falling
+				// through to the generic reject-and-keep-waiting branch
+				// below, which would misreport this as a plain unknown
+				// request instead of a named subsystem refusal.
+				if d != sshx.Forward {
+					_ = sshx.ApplyDisposition(r.Type, r.WantReply, r.Reply, sshx.Reject, nil)
+					if onReject != nil {
+						onReject(sshRequestRejectCode(r.Type, false), r.Type)
+					}
+					continue
+				}
+				// The machine is asked here, the way a pty-req is, and not
+				// later in forwardSessionStart: a machine with no
+				// sftp-server refuses, and that refusal must reach the
+				// person as an ordinary failure reply on a channel that
+				// stays usable. Asked later, the refusal would end the
+				// whole session ("target rejected session start").
+				// sftp-server reads nothing until the bridge starts, so
+				// asking before the recording exists moves no byte.
+				if !forward(r, d) {
+					continue
+				}
+				return sessionStart{cols: cols, rows: rows, pty: pty, subsystem: "sftp", request: r, replied: true, forwarded: true}, true
+			}
 			if r.Type == "shell" {
 				if !pty {
 					// IAMT-464: a shell with no terminal is refused. The
@@ -1559,6 +1628,19 @@ func awaitSessionStart(reqs <-chan *ssh.Request, target, human ssh.Channel, time
 func forwardSessionStart(start sessionStart, target ssh.Channel) bool {
 	if start.request == nil {
 		return false
+	}
+	if start.forwarded {
+		// awaitSessionStart already asked the machine and relayed its
+		// answer (the sftp subsystem).
+		return true
+	}
+	if start.replied {
+		// replyEarly already told the person yes: ask the machine, but
+		// answer nobody — a second reply to one request is a protocol
+		// error. A machine that says no ends the session the same way
+		// as below, just without the failure reply.
+		ok, err := target.SendRequest(start.request.Type, true, start.request.Payload)
+		return err == nil && ok
 	}
 	d := sshx.LookupChannelRequest(start.request.Type, start.request.Payload)
 	return sshx.ApplyDisposition(start.request.Type, start.request.WantReply, start.request.Reply, d, func() (bool, error) {
@@ -2122,40 +2204,6 @@ func (d drainedAfter) Read(p []byte) (int, error) {
 		<-d.drained
 	}
 	return n, err
-}
-
-// errExecStdinForbidden is the bridging fault execStdinGuard reports (R4
-// F-03). Its text is the journal's Result for the drop it causes.
-var errExecStdinForbidden = errors.New("E_SSH_STDIN_FORBIDDEN") // errdict:internal
-
-// execStdinGuard is the F-03 enforcement half for exec-only grants: it
-// wraps the target side of the bridge so the first byte the person writes
-// to the command's stdin is refused before it can reach the machine.
-//
-// Why a Write error rather than trusting the CloseWrite above: CloseWrite
-// is sent the moment the exec is forwarded, but bytes already in flight can
-// cross it on the wire, and x/crypto would surface a post-close Write as a
-// bare EOF — which core.Bridge, by design (IAMT-108), reads as a CLEAN end:
-// the payload would be silently gone and the session would stay up. A typed
-// error instead breaks the copy the same way any bridging fault does —
-// stop() closes both sides, the recording aborts, and the switch below
-// journals session.drop with the error's own text as Result. countWriter
-// never calls AddBytesIn for a failed Write (n == 0), so refused bytes are
-// absent from the recording's byte count and hash too, which is the honest
-// number: they never became part of the session.
-type execStdinGuard struct {
-	core.Stream
-	stderr io.Writer
-	once   sync.Once
-}
-
-func (s *execStdinGuard) Write(p []byte) (int, error) {
-	s.once.Do(func() {
-		if s.stderr != nil {
-			_, _ = s.stderr.Write(execStdinForbiddenMessage())
-		}
-	})
-	return 0, errExecStdinForbidden
 }
 
 // resizeRecording calls Resize on rec if it offers one. core.Recording does

@@ -260,7 +260,7 @@ func (f *Frame) saidLine(gtx layout.Context, ctl string) layout.Dimensions {
 		return layout.Dimensions{}
 	}
 	return layout.Inset{Top: unit.Dp(design.Tight)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 300), said.key)
+		return f.saidFull(gtx, ctl, said.text, said.key, 300)
 	})
 }
 

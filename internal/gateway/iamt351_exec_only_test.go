@@ -131,23 +131,20 @@ func TestIAMT351_ExecOnlyRejectsInteractiveRequestsAndAllowsExec(t *testing.T) {
 	// exec still works on this grant, and a pty-req arriving AFTER exec has
 	// already started (the second barrier, proxyChannelRequests) is refused
 	// too — on its own, third connection, since the first two channels are
-	// already gone. The fake machine side is an interpreter-shaped handler
-	// (like the real sshd running a bare command): it drains stdin and, once
-	// the gateway's F-03 CloseWrite arrives, parks instead of exiting, so
-	// the session's only possible exit is the gateway's own stdin refusal —
-	// the wait below is therefore deterministic, not a race with the
-	// machine's own EOF.
-	release := make(chan struct{})
+	// already gone. The fake machine side is an interpreter-shaped handler:
+	// it echoes stdin back and exits on EOF, like a real interpreter would.
 	f.sshd.setOnExecImmediate(func(ch ssh.Channel) {
 		buf := make([]byte, 4096)
 		for {
-			if _, err := ch.Read(buf); err != nil {
-				<-release
+			n, err := ch.Read(buf)
+			if n > 0 {
+				_, _ = ch.Write(buf[:n])
+			}
+			if err != nil {
 				return
 			}
 		}
 	})
-	t.Cleanup(func() { close(release) })
 	execClient, err := dialHuman(t, f.addr, f.person, f.machineID, f.personKey)
 	if err != nil {
 		t.Fatalf("dial human: %v", err)
@@ -160,32 +157,15 @@ func TestIAMT351_ExecOnlyRejectsInteractiveRequestsAndAllowsExec(t *testing.T) {
 	}
 	iamt351ExpectSSHReject(t, f, hs.ch, "pty-req", sshx.MarshalPTY(sshx.PTYRequest{Term: "xterm", Columns: 120, Rows: 35}))
 
-	// R4 F-03: exec on this grant starts with the machine's stdin already
-	// closed by the gateway, and a byte written anyway ends the session as
-	// E_SSH_STDIN_FORBIDDEN (TestF03_ExecOnlyGrantRefusesStdin pins that
-	// refusal itself; here the coarser half is pinned: what used to be
-	// echoed back by the machine must now stay unheard).
+	// 1.50: exec no longer closes or refuses the machine's stdin (R4 F-03's
+	// prohibition is gone) — bytes the person writes reach the machine and
+	// come back, exactly like any other exec-only command's own output.
 	const marker = "iamt351-exec-still-runs"
 	if _, err := hs.ch.Write([]byte(marker)); err != nil {
-		t.Logf("stdin write refused (%v) — the exec-only enforcement is holding", err)
+		t.Fatalf("write stdin on exec-only grant: %v", err)
 	}
-	waitUntil(t, "F-03: exec-only session must end after stdin is refused", func() bool {
-		evs, _, err := f.log.Read(events.Filter{
-			Types: []events.EventType{events.EventSessionDrop},
-			Actor: f.person, Object: f.machineID,
-		})
-		if err != nil {
-			return false
-		}
-		for _, ev := range evs {
-			if ev.Result == "E_SSH_STDIN_FORBIDDEN" {
-				return true
-			}
-		}
-		return false
-	})
-	if got := readUntil(t, hs.ch, marker); strings.Contains(got, marker) {
-		t.Fatalf("exec-only grant echoed stdin to the machine and back: %q", got)
+	if got := readUntil(t, hs.ch, marker); !strings.Contains(got, marker) {
+		t.Fatalf("exec-only grant did not forward stdin to the machine and back: %q", got)
 	}
 	_ = hs.ch.Close()
 }

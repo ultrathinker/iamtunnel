@@ -270,6 +270,13 @@ type Frame struct {
 	// (IAMT-232). Guarded by mu.
 	restarting bool
 
+	// autostartBox is the Server tab's "start at sign-in" checkbox, and
+	// autostartPending the state a press asked for until the poll
+	// confirms it (0 none, 1 on, 2 off), so the box does not flick back
+	// while Task Scheduler catches up.
+	autostartBox     widget.Bool
+	autostartPending int
+
 	// lists is the scroll state of each tab's page, owned by this window
 	// and touched only on the layout goroutine (IAMT-229). A widget.List
 	// rather than a layout.List since IAMT-334: it carries the scrollbar's

@@ -213,7 +213,7 @@ func (f *Frame) layoutGatewayState(gtx layout.Context) layout.Dimensions {
 			said := f.saidUnder(ctlGateway)
 			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctlGateway+"/said"), clipStr(said.text, 600), said.key)
+					return f.saidFull(gtx, ctlGateway, said.text, said.key, 600)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return design.SecondaryButton(gtx, f.theme, f.btn(ctlGatewayRefresh), word)
@@ -273,8 +273,7 @@ func (f *Frame) layoutGatewayWarnings(gtx layout.Context) layout.Dimensions {
 						)
 					}),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return design.Said(gtx, f.theme, f.sel(ctlGatewayCopyExe+"/said"),
-							clipStr(said.text, 400), said.key)
+						return f.saidFull(gtx, ctlGatewayCopyExe, said.text, said.key, 400)
 					}),
 				)
 			}),
@@ -346,7 +345,7 @@ func (f *Frame) layoutGatewayInstallForm(gtx layout.Context) layout.Dimensions {
 					return design.PrimaryButton(gtx, f.theme, f.btn(ctlGatewayInstall), word)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctlGatewayInstall+"/said"), clipStr(said.text, 900), said.key)
+					return f.saidFull(gtx, ctlGatewayInstall, said.text, said.key, 900)
 				}),
 			)
 		},
@@ -396,8 +395,7 @@ func (f *Frame) layoutGatewayClaim(gtx layout.Context) layout.Dimensions {
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(design.Gap)}.Layout),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return design.Said(gtx, f.theme, f.sel(ctlGatewayCopyClaim+"/said"),
-								clipStr(said.text, 200), said.key)
+							return f.saidFull(gtx, ctlGatewayCopyClaim, said.text, said.key, 200)
 						}),
 					)
 				}),
@@ -432,7 +430,7 @@ func (f *Frame) layoutGatewayRemove(gtx layout.Context) layout.Dimensions {
 					return design.SecondaryButton(gtx, f.theme, f.btn(ctlGatewayUninstall), word)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctlGatewayUninstall+"/said"), clipStr(said.text, 600), said.key)
+					return f.saidFull(gtx, ctlGatewayUninstall, said.text, said.key, 600)
 				}),
 			)
 		},

@@ -1580,20 +1580,26 @@ versions, here is the status of every design gap found.
      command string, then every stdout/stderr chunk, exit-status/
      exit-signal, and EOF, with a mandatory `fsync` before bytes reach the
      human.
-  3. *Remaining aspect*: if an attacker feeds a large script or command
-     stream over standard input in the `session` channel (RFC 4254 §5.2),
-     `.exec.jsonl` still records the fact of the command's execution and
-     all output it produced, but the incoming stdin stream itself still has
-     no dedicated record type (unlike stdout/stderr). Since 1.46 (R4 F-03):
-     under a shell grant, stdin is still carried and remains outside the
-     recording — the gap stands there. On a grant with the `exec`
-     capability, the gap is closed outright: the gateway closes the
-     machine's stdin right after forwarding the command and refuses any
-     bytes the human still writes (`E_SSH_STDIN_FORBIDDEN`, PROTOCOL §4.1) —
-     there's nothing to carry, so nothing to audit; the text classifier
-     additionally flags interpreters that read stdin as yellow
-     (`stdin-interpreter`, PROTOCOL §6.1), but this is a hint, not an
-     enforcement.
+  3. *Remaining aspect, status as of 1.50*: 1.46 (R4 F-03) closed this gap
+     on an exec grant by prohibition — the gateway closed the machine's
+     stdin right after forwarding the command and refused any bytes the
+     human wrote (`E_SSH_STDIN_FORBIDDEN`). The 2026-09-27 security model
+     drops advance prohibitions in favor of judging against the stated
+     goal, and 1.50 lifts that prohibition: an exec grant's stdin is
+     carried, like a shell grant's, and now also lands in `.exec.jsonl` as
+     its own entries (`stream:"stdin"`) — the audit gap named above is
+     closed more completely for exec than before, not less. An interpreter
+     with no script argument of its own (`powershell`, `bash`, etc.,
+     including `powershell.exe`, by full path, or behind `cmd /c`) makes the
+     gateway read stdin whole before forwarding (to EOF, 1 MiB, 60 s) and
+     hand the classifier the script together with the command; a script not
+     read whole, or not text, is considered unjudged: it can't be approved
+     (an approval would release the unread tail), and under `ask`/`block`
+     the command is refused (`E_STDIN_SCRIPT_UNJUDGED`), while under
+     `log`/`warn` it goes through fully recorded (PROTOCOL §4.1) — the case
+     where the text classifier used to only flag the `stdin-interpreter`
+     form yellow (PROTOCOL §6.1) without seeing what the interpreter
+     actually read.
 
 ### Gap 4. No isolation between different people's sessions under one shared `osUser` account (§4.3, §5.2, §6.3, §6.4) — REMAINS (an accepted 1.0 limitation)
 - **The problem**: multiple operators can work simultaneously on the same
@@ -1659,11 +1665,12 @@ implementation status in the v0.3/v1 architecture:
    - *Status in v0.3*: done for the required outward audit —
      `.exec.jsonl` records the command, every lossless stdout/stderr chunk,
      exit-status/exit-signal and EOF with a mandatory `fsync` before
-     reaching the human. Incoming STDIN chunks deliberately have no
-     dedicated record type (§6.5). Since 1.46 (R4 F-03), an exec-capability
-     grant carries no stdin at all (closed by the gateway,
-     `E_SSH_STDIN_FORBIDDEN`) — recording is only needed under a shell
-     grant, where the gap stands.
+     reaching the human. Since 1.50, incoming STDIN chunks also get their
+     own record type (`stream:"stdin"`) — on an exec grant, where
+     1.46–1.49 (R4 F-03) instead forbade stdin outright
+     (`E_SSH_STDIN_FORBIDDEN`). The prohibition was lifted by the
+     2026-09-27 decision (no bans in advance — the classifier judges), and
+     the text is recorded byte-for-byte, not just as a count and a hash.
 2. **A control RPC channel from gateway to machine (`iamtunnel-control`)**
    - *Status in v0.3*: **FULLY DONE** in SPEC.md v0.3 and PROTOCOL.md v1
      (§5.1, §5.2). A persistent `iamtunnel-control` channel carries

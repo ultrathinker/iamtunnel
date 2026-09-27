@@ -1407,10 +1407,12 @@ func TestScenario17_WindowChangeRecorded(t *testing.T) {
 	}
 }
 
-// 18. File transfer, port forwarding, and key forwarding are refused.
+// 18. Port forwarding, key forwarding, X11 and non-sftp subsystems are refused.
 //
-// Assertion: the gateway strictly blocks SFTP/subsystem, direct-tcpip,
-// tcpip-forward, and the SSH agent (SPEC §5.1, PROTOCOL §4.1).
+// Assertion: the gateway blocks non-sftp subsystems, direct-tcpip,
+// tcpip-forward, the SSH agent and X11 (SPEC §5.1, PROTOCOL §4.1), and each
+// refusal leaves the channel usable. Until 1.49 sftp was refused here too;
+// since 1.50 it is forwarded to the machine (PROTOCOL §4.3).
 func TestScenario18_ProhibitedChannelsAndRequestsRejected(t *testing.T) {
 	f := newFixture(t, nil)
 	f.connectMachine(fakeMachineBehavior{})
@@ -1455,7 +1457,24 @@ func TestScenario18_ProhibitedChannelsAndRequestsRejected(t *testing.T) {
 	// Open a session to check requests inside the session channel
 	hs := openHumanSession(t, client)
 
-	// 3. File transfer via the SFTP subsystem — refused
+	// 3. Any subsystem other than sftp — refused by the gateway.
+	netconfPayload := ssh.Marshal(struct {
+		Subsystem string
+	}{
+		Subsystem: "netconf",
+	})
+	ok, err = hs.ch.SendRequest("subsystem", true, netconfPayload)
+	if err != nil {
+		t.Fatalf("netconf subsystem request: the channel died instead of being refused: %v", err)
+	}
+	if ok {
+		t.Fatal("the gateway allowed a netconf subsystem request!")
+	}
+
+	// 3b. sftp: since 1.50 the gateway forwards it to the machine (PROTOCOL
+	// §4.3). This fake machine has no sftp-server and refuses; that refusal
+	// must reach the person as an ordinary failure on a channel that stays
+	// usable — the requests below go over the same channel.
 	subsystemPayload := ssh.Marshal(struct {
 		Subsystem string
 	}{
@@ -1463,10 +1482,10 @@ func TestScenario18_ProhibitedChannelsAndRequestsRejected(t *testing.T) {
 	})
 	ok, err = hs.ch.SendRequest("subsystem", true, subsystemPayload)
 	if err != nil {
-		t.Fatalf("sftp subsystem request: the channel died instead of being refused: %v", err)
+		t.Fatalf("sftp subsystem request refused by the machine: the channel died instead of carrying the refusal: %v", err)
 	}
 	if ok {
-		t.Fatal("the gateway allowed an sftp subsystem request!")
+		t.Fatal("an sftp subsystem the machine refused was reported as accepted")
 	}
 
 	// 4. SSH agent forwarding (auth-agent-req@openssh.com) — refused

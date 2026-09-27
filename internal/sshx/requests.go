@@ -97,8 +97,14 @@ var channelRequestTable = []requestRow{
 	// forward, and create no event.
 	{"eow@openssh.com", Drop},
 
+	// subsystem — the decision depends on the payload (only "sftp" is
+	// allowed, 1.50), see LookupChannelRequest/SubsystemDisposition. The
+	// row is needed so IsKnownChannelRequest can tell "an explicit rule"
+	// from "an unknown name"; the disposition here is just a safe
+	// minimum (E_SSH_SUBSYSTEM_FORBIDDEN for everything but "sftp").
+	{"subsystem", Reject},
+
 	// §4.1: forbidden ones. Reject, event, on want-reply — failure.
-	{"subsystem", Reject},                  // E_SSH_SUBSYSTEM_FORBIDDEN
 	{"x11-req", Reject},                    // E_SSH_X11_FORBIDDEN
 	{"auth-agent-req@openssh.com", Reject}, // E_SSH_AGENT_FORBIDDEN
 }
@@ -235,19 +241,39 @@ func envDisposition(payload []byte) Disposition {
 	return Forward
 }
 
+// SubsystemDisposition returns Forward for the one subsystem name 1.50
+// allows through — "sftp", on either a shell or an exec grant — and
+// Reject for every other name. payload is the type-specific payload of
+// the "subsystem" request (RFC 4254 §6.5: one string, the subsystem
+// name); a malformed payload is Reject, the same as an unrecognized name.
+func SubsystemDisposition(payload []byte) Disposition {
+	sub, err := ParseSubsystem(payload)
+	if err != nil {
+		return Reject
+	}
+	if sub.Name == "sftp" {
+		return Forward
+	}
+	return Reject
+}
+
 // LookupChannelRequest — the single entry point for a human's channel request.
 //
-// payload is needed for "env": per SPEC §5.1 the decision depends
-// on the variable's name inside the payload, not on the request's
-// name. For every other name, payload is unused and may be nil. An
-// unknown name is Reject (PROTOCOL §4.1: "An unknown channel/global
-// request is rejected with E_SSH_REQUEST_FORBIDDEN").
+// payload is needed for "env" and "subsystem": per SPEC §5.1 the env
+// decision depends on the variable's name inside the payload, not on the
+// request's name, and since 1.50 "subsystem" forwards only the single
+// name "sftp" the same way. For every other name, payload is unused and
+// may be nil. An unknown name is Reject (PROTOCOL §4.1: "An unknown
+// channel/global request is rejected with E_SSH_REQUEST_FORBIDDEN").
 //
 // Capping the number of env requests per session is EnvBudget.Decide's
 // job; this function is stateless and does not check the count limit.
 func LookupChannelRequest(name string, payload []byte) Disposition {
 	if name == "env" {
 		return envDisposition(payload)
+	}
+	if name == "subsystem" {
+		return SubsystemDisposition(payload)
 	}
 	for _, row := range channelRequestTable {
 		if row.name == name {

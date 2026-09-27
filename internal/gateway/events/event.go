@@ -94,6 +94,17 @@ const (
 	// part count. Written by the window-side exporter
 	// (internal/record/export), not by the gateway.
 	EventRecordingExport EventType = "recording.export"
+
+	// One completed SFTP file operation (1.50, IAMT-fileio): a file
+	// transfer (upload/download) or a mutation (remove/rename/mkdir/
+	// rmdir/setstat) that the subsystem proxy finished parsing. Actor is
+	// the person, object the machine; details carry sessionId, op,
+	// direction (for a transfer), path, newPath (for a rename), size,
+	// sha256 (or "non-sequential" when a write did not run from offset 0
+	// in order) and the outcome the server reported. A mutation the risk
+	// classifier stopped never reaches this type — that refusal is
+	// session.risk, the same as an exec command's.
+	EventSessionFile EventType = "session.file"
 )
 
 // ErrInvalidEvent wraps every validation failure of an event, so that a caller can
@@ -126,7 +137,8 @@ func IsValidEventType(t EventType) bool {
 		EventLogRotate,
 		EventGrantRevoke,
 		EventSessionWatch,
-		EventRecordingExport:
+		EventRecordingExport,
+		EventSessionFile:
 		return true
 	default:
 		return false

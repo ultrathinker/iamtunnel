@@ -941,7 +941,8 @@ Success: the gateway opens an SSH session to the machine (§5.2) and proxies
 | `signal` | yes | a channel request, `want-reply=false`, relayed |
 | `SSH_MSG_CHANNEL_EOF`, `SSH_MSG_CHANNEL_CLOSE` | yes | separate RFC 4254 §5.3 packets, not requests; relayed both ways |
 | `exit-status`, `exit-signal` | yes | relayed back to the person |
-| `subsystem` (sftp) | **no** | refused, an event |
+| `subsystem` `sftp` | yes (since 1.50) | relayed on any grant; the SFTP stream is parsed without altering bytes, file operations are written to `.exec.jsonl` and `session.file`, and the changing ones are judged by the risk classifier (PROTOCOL §4.3) |
+| `subsystem` other name | **no** | refused, an event |
 | `direct-tcpip`, `tcpip-forward`, agent, x11 | **no** | refused, an event |
 | `eow@openssh.com`, `no-more-sessions@openssh.com` | yes | `want-reply=false`; a valid OpenSSH notice, not relayed, no event |
 | global `keepalive@openssh.com` | yes | `want-reply=true`, success with empty payload |
@@ -1173,7 +1174,8 @@ power loss".
   `recordings/<machine>/<YYYY-MM-DD>/<HHMMSS>-<person>-<session-id>.cast`
   plus `.txt` plus `.meta`; exec without a PTY as a lossless
   `.exec.jsonl` plus `.meta`. `.exec.jsonl` holds the command, base64
-  stdout/stderr chunks, exit-status/exit-signal and EOF in one sequence;
+  stdout/stderr chunks (since 1.50, stdin chunks too), exit-status/exit-signal
+  and EOF in one sequence;
   every file is `0600` inside a `0700` directory — only the `iamtunnel`
   service account can read recordings (there's no separate audit group in
   v1). The session name comes from the gateway's own clock
@@ -1212,17 +1214,31 @@ power loss".
   transcript as the line's final state, not every intermediate frame. Its
   own compact code, no external terminal emulators, its own test corpus of
   real PowerShell sessions.
-- **Exec-mode input: name, size and hash, but not content** (1.3).
-  `.exec.jsonl` still never carries stdin — but `.meta` gets a
-  `stdin{bytes, sha256}` for what passed through, and the destination
-  filename when the command names one explicitly. This is enough to later
-  prove or disprove that a specific file reached the machine, without
-  turning the journal into a store of someone else's secrets. This whole
-  transfer lives under a shell grant: on a grant with the `exec` capability
-  (1.46), the gateway closes the machine's stdin right after forwarding the
-  command and refuses any bytes the human writes
-  (`E_SSH_STDIN_FORBIDDEN`, PROTOCOL §4.1) — no content, volume, or hash at
-  all, because the input never arrives.
+- **Exec-mode input is recorded in full** (1.50). Whatever the human writes
+  to an exec command's stdin goes to the machine as-is and lands in
+  `.exec.jsonl` as its own entries (`stream:"stdin"`, byte-for-byte, in the
+  same sequence as the output); `.meta`, as since 1.3, still carries
+  `stdin{bytes, sha256}` — the size and hash — and, when the command names a
+  destination file explicitly, its name too. Shell-session stdin is still
+  recorded only as a size and a hash. If the command is an interpreter
+  reading a script from stdin (`powershell`, `bash`, `python -`,
+  `powershell -Command -`, including as `powershell.exe`, by full path, or
+  behind `cmd /c`/`start`; PROTOCOL §4.1), the gateway reads the script
+  whole before forwarding — to end of input, at most 1 MiB and 60 s — and
+  the classifier judges the command together with it. A script that doesn't
+  finish within those bounds, or isn't text, is not considered judged, and
+  no approval applies to it (an approval would name only the part that was
+  seen): under `ask` and `block` the command is refused
+  (`E_STDIN_SCRIPT_UNJUDGED`, exit 126, with advice to send the script as a
+  file or as a finite text), and under `log`/`warn` it goes through like any
+  red. Everything read from the channel is recorded, including the part
+  past 1 MiB. Only the first command of a pipeline counts as a stdin
+  reader, and a run with a help/version flag (`--version`, `/?`, etc.)
+  doesn't.
+  *History:* in 1.3–1.49 `.exec.jsonl` never carried stdin (only a size and
+  hash in `.meta`), and in 1.46–1.49 an exec grant didn't carry stdin at all
+  (`E_SSH_STDIN_FORBIDDEN`); 1.50 lifted the prohibition, per the 2026-09-27
+  model: judge and record, don't forbid in advance.
 - Recording of the required kind opens before the command and before the
   first machine→human byte. Every byte is written and fsynced before
   forwarding; a write error closes the session before the unwritten byte is
@@ -1437,7 +1453,8 @@ iamtunnel selftest
   on the same machine — refused; a keepalive timeout; a repeated
   registration code; a corrupted state → read-only storage, `gateway run`
   won't start; a full disk → refused; `window-change` in the recording;
-  refusing sftp/forward/agent; session limits; pairing (1.2): a correct PIN
+  refusing non-`sftp` subsystems/forward/agent (since 1.50, a machine's own
+  refusal of `sftp` leaves the channel usable); session limits; pairing (1.2): a correct PIN
   with an open window makes the client an admin in one write; 3 wrong PINs
   from an address (each from its own new connection, as in a real attack) →
   a 3-minute address ban, a fourth attempt refused before reading the
@@ -1504,10 +1521,12 @@ after 3.
 - Windows OpenSSH stays on machines. The terminal is iamtunnel's own
   built-in SSH client (`x/crypto/ssh`, raw console mode, `window-change`);
   an external `ssh.exe` isn't needed.
-- **1.0 = shell + exec.** No SFTP/scp, no `-L/-R/-D`, no agent forwarding.
-  Shell/exec with a PTY are recorded as `.cast` + `.txt`; exec without a
-  PTY as lossless `.exec.jsonl`. A channel whose machine→human bytes can't
-  be recorded is forbidden. The grant's `caps` field is already in place.
+- **1.0 = shell + exec.** No SFTP/scp, no `-L/-R/-D`, no agent forwarding
+  [revised in 1.50: the `sftp` subsystem, and `scp` through it, are allowed,
+  logged and judged — PROTOCOL §4.3]. Shell/exec with a PTY are recorded as
+  `.cast` + `.txt`; exec without a PTY as lossless `.exec.jsonl`. A channel
+  whose machine→human bytes can't be recorded is forbidden. The grant's
+  `caps` field is already in place.
   File transfer (the predecessor had `get/put` over exec) is deferred to
   1.1.
 - Linux machines as targets are 1.1: `~osUser/.ssh/authorized_keys`, root,

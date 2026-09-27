@@ -16,6 +16,7 @@ package record
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -177,24 +178,23 @@ func TestIAMT336_StdinMeta_LargeStreamingHash(t *testing.T) {
 	}
 }
 
-// TestIAMT336_ExecJSONL_DoesNotContainStdin pins the other half of the
-// rule. The hash is in .meta; the bytes must NOT be in .exec.jsonl. A
-// human reading the journal (or grepping it for the secret) must come
-// back empty-handed: stdin content is forbidden there even if .meta
-// ever leaks.
-func TestIAMT336_ExecJSONL_DoesNotContainStdin(t *testing.T) {
+// TestIAMT336_ExecJSONL_ContainsStdinSince150 pins the rule as 1.50
+// changed it. Until 1.49 the bytes the person sent were kept out of
+// .exec.jsonl (only counted and hashed in .meta), and exec grants refused
+// stdin altogether (R4 F-03). 1.50 reopened stdin on exec grants under
+// the "no prohibitions, everything is logged" model, so the bytes are now
+// part of the record: a "stdin" chunk in the same sequence as the output.
+// .meta still carries only the count and the hash, never the bytes.
+func TestIAMT336_ExecJSONL_ContainsStdinSince150(t *testing.T) {
 	dir := t.TempDir()
 	rec, err := NewExecRecorder(ExecConfig{SessionConfig: SessionConfig{
-		BaseDir: dir, Machine: "machine", Person: "person", OSUser: "operator", SessionID: "stdin-isolation", SubdirLayout: true,
+		BaseDir: dir, Machine: "machine", Person: "person", OSUser: "operator", SessionID: "stdin-recorded", SubdirLayout: true,
 	}, Command: "WriteAllBytes"})
 	if err != nil {
 		t.Fatalf("NewExecRecorder: %v", err)
 	}
-	// Distinctive payload - long enough that random chance of matching
-	// anything else in the file is essentially zero, short enough to
-	// make a leak obvious in failure output.
-	const secret = "PASSWORD-LEAK-CANARY-AMT336-DO-NOT-LOG"
-	rec.AddBytesIn([]byte(secret))
+	const sent = "STDIN-RECORDED-CANARY-R150"
+	rec.AddBytesIn([]byte(sent))
 	if _, err := rec.Write([]byte("ok")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -206,27 +206,29 @@ func TestIAMT336_ExecJSONL_DoesNotContainStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if strings.Contains(string(raw), secret) {
-		t.Fatalf(".exec.jsonl must NOT contain the bytes forwarded on stdin; found the canary. Raw:\n%s", raw)
+	var found bool
+	for _, line := range splitJSONLines(raw) {
+		var ev execEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if ev.Type == "chunk" && ev.Stream == "stdin" {
+			data, err := base64.StdEncoding.DecodeString(ev.Data)
+			if err != nil {
+				t.Fatalf("decode stdin chunk: %v", err)
+			}
+			found = string(data) == sent
+		}
 	}
-	if !strings.Contains(string(raw), "WriteAllBytes") {
-		t.Fatalf(".exec.jsonl must still contain the command line; got:\n%s", raw)
+	if !found {
+		t.Fatalf(".exec.jsonl must carry the bytes forwarded on stdin as a stdin chunk; got:\n%s", raw)
 	}
-	// The .meta file is allowed to carry the SHA-256 of the secret, but
-	// must not carry the secret itself.
 	metaRaw, err := os.ReadFile(rec.Paths().MetaPath)
 	if err != nil {
 		t.Fatalf("ReadFile meta: %v", err)
 	}
-	if strings.Contains(string(metaRaw), secret) {
-		t.Fatalf(".meta must NOT contain the bytes forwarded on stdin; found the canary. Raw:\n%s", metaRaw)
-	}
-
-	// The recording file must also stay in the same size class as a
-	// no-stdin recording: just the JSONL envelope (command, chunk,
-	// eof), not the 47 KB the live session originally saw.
-	if int64(len(raw)) > 4096 {
-		t.Fatalf(".exec.jsonl grew unexpectedly large: %d bytes (expected a few hundred). The stdin bytes leaked into the journal.", len(raw))
+	if strings.Contains(string(metaRaw), sent) {
+		t.Fatalf(".meta must carry only the count and hash of stdin, not the bytes; got:\n%s", metaRaw)
 	}
 }
 

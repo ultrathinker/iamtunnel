@@ -41,7 +41,7 @@ func (f *Frame) layoutServerScreen(gtx layout.Context) layout.Dimensions {
 	if f.btn(ctlServerStop).Clicked(gtx) {
 		f.stopServer()
 	}
-	if f.btn(ctlServerStart).Clicked(gtx) {
+	if f.btn(ctlServerStart).Clicked(gtx) && f.needsAdmin("Starting the machine agent") {
 		f.startServer()
 	}
 
@@ -110,13 +110,16 @@ func (f *Frame) layoutServerScreen(gtx layout.Context) layout.Dimensions {
 			if said.text == "" {
 				said = f.saidUnder(ctlServerStart)
 			}
-			return design.Said(gtx, f.theme, f.sel("server/said"), clipStr(said.text, 400), said.key)
+			return f.saidFull(gtx, "server", said.text, said.key, 400)
 		},
 		// The reason the gateway currently refuses this machine, verbatim
 		// from the runtime (IAMT-69): a machine the gateway has cut off
 		// must not look like an ordinary idle one. The block exists only
 		// when the snapshot carries a notice; an empty one draws nothing.
-		f.layoutServerNotice,
+		// ...and, in the same section so an empty one costs no gap, the
+		// setup: the old-registration block (only when there is one) and
+		// the autostart checkbox (1.49).
+		f.layoutServerNoticeAndSetup,
 		// The machine's own facts.
 		func(gtx layout.Context) layout.Dimensions {
 			rows := []design.FactRow{
@@ -674,7 +677,7 @@ func (f *Frame) layoutConnString(gtx layout.Context) layout.Dimensions {
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Gap)}.Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlClientSave+"/said"), clipStr(said.text, 400), said.key)
+			return f.saidFull(gtx, ctlClientSave, said.text, said.key, 400)
 		}),
 	)
 }
@@ -698,7 +701,7 @@ func (f *Frame) layoutGatewayList(gtx layout.Context) layout.Dimensions {
 						"below — there is nothing else to enter, and no password anywhere in this product.")
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return design.Said(gtx, f.theme, f.sel(ctlClientGateways+"/said"), clipStr(said.text, 300), said.key)
+				return f.saidFull(gtx, ctlClientGateways, said.text, said.key, 300)
 			}),
 		)
 	}
@@ -760,7 +763,7 @@ func (f *Frame) layoutGatewayList(gtx layout.Context) layout.Dimensions {
 		)
 	}
 	children = append(children, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-		return design.Said(gtx, f.theme, f.sel(ctlClientGateways+"/said"), clipStr(said.text, 300), said.key)
+		return f.saidFull(gtx, ctlClientGateways, said.text, said.key, 300)
 	}))
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx, children...)
 }
@@ -782,7 +785,7 @@ func (f *Frame) layoutRefreshButton(gtx layout.Context) layout.Dimensions {
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Right: unit.Dp(design.Gap)}.Layout(gtx,
 				func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctlClientRefresh+"/said"), clipStr(said.text, 120), said.key)
+					return f.saidFull(gtx, ctlClientRefresh, said.text, said.key, 120)
 				})
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1045,7 +1048,7 @@ func (f *Frame) layoutAdminScreen(gtx layout.Context) layout.Dimensions {
 					)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 200), said.key)
+					return f.saidFull(gtx, ctl, said.text, said.key, 200)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return f.layoutGrantExtend(gtx, g)
@@ -1275,8 +1278,7 @@ func (f *Frame) layoutAdminScreen(gtx layout.Context) layout.Dimensions {
 				// already at the window's edge.
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					said := f.saidUnder(ctlAdminRefresh)
-					return design.Said(gtx, f.theme, f.sel(ctlAdminRefresh+"/said"),
-						clipStr(said.text, 200), said.key)
+					return f.saidFull(gtx, ctlAdminRefresh, said.text, said.key, 200)
 				}),
 			)
 		},
@@ -1334,7 +1336,7 @@ func (f *Frame) rowWithRemove(ctl, name, detail, renameCtl, moreCtl, moreWord st
 			)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 200), said.key)
+			return f.saidFull(gtx, ctl, said.text, said.key, 200)
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
 	}
@@ -1370,7 +1372,7 @@ func (f *Frame) listSection(label, ctl, word string, list layout.Widget, form la
 				}
 				return layout.Inset{Top: unit.Dp(design.Tight)}.Layout(gtx,
 					func(gtx layout.Context) layout.Dimensions {
-						return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 400), said.key)
+						return f.saidFull(gtx, ctl, said.text, said.key, 400)
 					})
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -1627,7 +1629,7 @@ func (f *Frame) layoutGrantGoal(gtx layout.Context, g Grant) layout.Dimensions {
 			}
 			return layout.Inset{Top: unit.Dp(design.Tight)}.Layout(gtx,
 				func(gtx layout.Context) layout.Dimensions {
-					return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 300), said.key)
+					return f.saidFull(gtx, ctl, said.text, said.key, 300)
 				})
 		}),
 	)
@@ -1693,7 +1695,7 @@ func (f *Frame) layoutGrantExtend(gtx layout.Context, g Grant) layout.Dimensions
 					}
 					return layout.Inset{Top: unit.Dp(design.Tight)}.Layout(gtx,
 						func(gtx layout.Context) layout.Dimensions {
-							return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 300), said.key)
+							return f.saidFull(gtx, ctl, said.text, said.key, 300)
 						})
 				}),
 			)
@@ -1742,7 +1744,7 @@ func (f *Frame) layoutRowRename(gtx layout.Context, ctl, placeholder string, app
 					}
 					return layout.Inset{Top: unit.Dp(design.Tight)}.Layout(gtx,
 						func(gtx layout.Context) layout.Dimensions {
-							return design.Said(gtx, f.theme, f.sel(ctl+"/said"), clipStr(said.text, 300), said.key)
+							return f.saidFull(gtx, ctl, said.text, said.key, 300)
 						})
 				}),
 			)
@@ -1968,7 +1970,7 @@ func (f *Frame) layoutAlreadyJoined(gtx layout.Context, id *AdminIdentity) layou
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Gap)}.Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlAdminForget+"/said"), clipStr(said.text, 400), said.key)
+			return f.saidFull(gtx, ctlAdminForget, said.text, said.key, 400)
 		}),
 	)
 }
@@ -2049,7 +2051,7 @@ func (f *Frame) layoutPairJoinForm(gtx layout.Context) layout.Dimensions {
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(design.Gap)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return design.Said(gtx, f.theme, f.sel(ctlAdminPairJoin+"/said"), clipStr(said.text, 400), said.key)
+				return f.saidFull(gtx, ctlAdminPairJoin, said.text, said.key, 400)
 			}),
 		)
 	}
@@ -2355,10 +2357,10 @@ func (f *Frame) layoutPairingCard(gtx layout.Context) layout.Dimensions {
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Gap)}.Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlAdminPairingStart+"/said"), clipStr(startSaid.text, 400), startSaid.key)
+			return f.saidFull(gtx, ctlAdminPairingStart, startSaid.text, startSaid.key, 400)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlAdminPairingStop+"/said"), clipStr(stopSaid.text, 200), stopSaid.key)
+			return f.saidFull(gtx, ctlAdminPairingStop, stopSaid.text, stopSaid.key, 200)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			// This used to tell the administrator to send the PIN and
@@ -2644,7 +2646,10 @@ func (f *Frame) layoutEnrolField(gtx layout.Context) layout.Dimensions {
 // layoutRegisterRow is the button that spends the code, and the one
 // sentence that says what came of it.
 func (f *Frame) layoutRegisterRow(gtx layout.Context) layout.Dimensions {
-	if f.btn(ctlSetupRegister).Clicked(gtx) {
+	// Asked BEFORE anything is sent: registering writes the enrolment
+	// anchor where only an administrator may, and a refusal after the
+	// gateway accepted the code would have spent a one-time code.
+	if f.btn(ctlSetupRegister).Clicked(gtx) && f.needsAdmin("Registering this machine") {
 		f.registerThisMachine()
 	}
 	word := "REGISTER THIS MACHINE"
@@ -2662,7 +2667,7 @@ func (f *Frame) layoutRegisterRow(gtx layout.Context) layout.Dimensions {
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Gap)}.Layout),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlSetupRegister+"/said"), clipStr(said.text, 400), said.key)
+			return f.saidFull(gtx, ctlSetupRegister, said.text, said.key, 400)
 		}),
 	)
 }

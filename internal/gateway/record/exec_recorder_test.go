@@ -44,8 +44,10 @@ func TestExecRecorderWritesDurableOrderedLosslessStream(t *testing.T) {
 		}
 		events = append(events, event)
 	}
-	if len(events) != 5 || events[0].Type != "command" || events[0].Command != "powershell -Command Write-Output ok" || events[1].Stream != "stdout" || events[1].Data != "b3V0/w==" || events[2].Stream != "stderr" || events[2].Data != "d2Fybgo=" || events[3].Type != "exit-status" || events[3].Status == nil || *events[3].Status != 7 || events[4].Type != "eof" {
-		t.Fatalf("IAMT-163 canary: JSONL must be command, lossless stdout/stderr chunks, exit-status, EOF in one sequence; got %#v", events)
+	// 1.50: stdin is recorded too, as a "stdin" chunk in the same sequence
+	// (it used to be counted and hashed only).
+	if len(events) != 6 || events[0].Type != "command" || events[0].Command != "powershell -Command Write-Output ok" || events[1].Stream != "stdout" || events[1].Data != "b3V0/w==" || events[2].Stream != "stderr" || events[2].Data != "d2Fybgo=" || events[3].Stream != "stdin" || events[3].Data != "c3RkaW4h" || events[4].Type != "exit-status" || events[4].Status == nil || *events[4].Status != 7 || events[5].Type != "eof" {
+		t.Fatalf("IAMT-163 canary: JSONL must be command, lossless stdout/stderr/stdin chunks, exit-status, EOF in one sequence; got %#v", events)
 	}
 	for i, event := range events {
 		if event.Sequence != uint64(i) {

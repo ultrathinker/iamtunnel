@@ -218,7 +218,7 @@ func (f *Frame) layoutHistoryFilters(gtx layout.Context) layout.Dimensions {
 			)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return design.Said(gtx, f.theme, f.sel(ctlHistory+"/said"), clipStr(said.text, 300), said.key)
+			return f.saidFull(gtx, ctlHistory, said.text, said.key, 300)
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			if h.Total == 0 {

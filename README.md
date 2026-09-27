@@ -31,7 +31,8 @@ itself the moment the grant ends or is revoked — no cleanup step to forget.
   classifier — local rules and/or an optional hosted AI classifier (off by
   default; see [what it receives](docs/AI-AGENTS.md#what-the-external-classifier-receives)) — judged
   against the goal declared for the grant and recent command history. Red
-  commands are held for human approval or blocked outright.
+  commands are held for human approval or blocked outright. Files move with
+  plain `scp`/`sftp`, logged and judged the same way.
 - **No TOFU, anywhere.** Every fingerprint is pinned from a signed string:
   the gateway's key from the connection string and enrollment code, a
   machine's host key at registration. Enrollment uses one-time codes;

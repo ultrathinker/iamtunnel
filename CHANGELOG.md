@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.1] - 2026-09-28
+
+### Fixed
+- The gateway records a window resize before it answers the request, so
+  a resize followed at once by more output or by the end of the session
+  is no longer missing from the recording.
+
 ## [1.51.0] - 2026-09-28
 
 ### Changed

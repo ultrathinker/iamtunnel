@@ -1245,30 +1245,38 @@ func (g *Gateway) proxyChannelRequests(src <-chan *ssh.Request, fwdTo, human ssh
 				r.Payload = fixedPayload
 			}
 		}
-		forward := func() (bool, error) { return fwdTo.SendRequest(r.Type, r.WantReply, r.Payload) }
-		applied := sshx.ApplyDisposition(r.Type, r.WantReply, r.Reply, d, forward)
-		if applied != sshx.Forward {
-			continue
-		}
-		if rec == nil {
-			continue
-		}
-		switch r.Type {
-		case "pty-req":
-			if p, err := sshx.ParsePTY(r.Payload); err == nil && p.Columns > 0 && p.Rows > 0 {
-				resizeRecording(rec, int(p.Columns), int(p.Rows))
+		// The size is recorded inside forward, once the machine has taken
+		// it and BEFORE the person is answered: recorded after the answer,
+		// a resize raced the person's next keystroke and the session's
+		// end, and could land after the output it preceded or be lost
+		// with the closed recording.
+		forward := func() (bool, error) {
+			ok, err := fwdTo.SendRequest(r.Type, r.WantReply, r.Payload)
+			if err == nil && (ok || !r.WantReply) && rec != nil {
+				recordRequestSize(rec, r.Type, r.Payload)
 			}
-		case "window-change":
-			if w, err := sshx.ParseWindow(r.Payload); err == nil && w.Columns > 0 && w.Rows > 0 {
-				resizeRecording(rec, int(w.Columns), int(w.Rows))
-			}
-			// IAMT-210: no exec case here. The single session.start event
-			// was already written by serveHumanSession, with the exec
-			// command in Details. Writing another event from this path
-			// produced the second "session.start" row sessions.history
-			// used to render, with the actor literal "exec" that is
-			// neither a person nor a machine — see the canary in
-			// iamt210_sessions_history_exec_test.go.
+			return ok, err
+		}
+		_ = sshx.ApplyDisposition(r.Type, r.WantReply, r.Reply, d, forward)
+	}
+}
+
+// recordRequestSize writes the "r" event for a forwarded pty-req or
+// window-change. IAMT-210: there is no exec case here. The single
+// session.start event was already written by serveHumanSession, with the
+// exec command in Details. Writing another event from this path produced
+// the second "session.start" row sessions.history used to render, with
+// the actor literal "exec" that is neither a person nor a machine — see
+// the canary in iamt210_sessions_history_exec_test.go.
+func recordRequestSize(rec core.Recording, reqType string, payload []byte) {
+	switch reqType {
+	case "pty-req":
+		if p, err := sshx.ParsePTY(payload); err == nil && p.Columns > 0 && p.Rows > 0 {
+			resizeRecording(rec, int(p.Columns), int(p.Rows))
+		}
+	case "window-change":
+		if w, err := sshx.ParseWindow(payload); err == nil && w.Columns > 0 && w.Rows > 0 {
+			resizeRecording(rec, int(w.Columns), int(w.Rows))
 		}
 	}
 }

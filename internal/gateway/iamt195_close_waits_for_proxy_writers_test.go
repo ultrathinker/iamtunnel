@@ -167,10 +167,13 @@ func TestIAMT195_CloseWaitsForProxyChannelRequests_Resize(t *testing.T) {
 	// resizeRecording switch entirely, without ever entering Resize. Every
 	// other window-change send in this package already uses wantReply=true
 	// for the same reason (see the file doc comment).
+	//
+	// The send runs on its own goroutine: the size is recorded before the
+	// person is answered (1.51), so the answer to this request waits on
+	// the very Resize the test parks, and arrives only once the gateway
+	// is closed.
 	w := sshx.WindowChange{Columns: 100, Rows: 40}
-	if ok, err := hs.ch.SendRequest("window-change", true, sshx.MarshalWindow(w)); err != nil || !ok {
-		t.Fatalf("send window-change: ok=%v err=%v", ok, err)
-	}
+	go func() { _, _ = hs.ch.SendRequest("window-change", true, sshx.MarshalWindow(w)) }()
 
 	select {
 	case <-started:

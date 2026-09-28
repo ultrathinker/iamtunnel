@@ -174,6 +174,23 @@ func TestF11_HandshakeFloodIsOneLine(t *testing.T) {
 		return len(handshakeFailures()) == 1
 	})
 
+	// The gateway notices a dead handshake on its own goroutine, after the
+	// client has already hung up, so the first line can be written before
+	// the last connects are counted. Wait for all seven repeats before
+	// ending the quiet period, or its count is written short and the rest
+	// open a new period.
+	waitUntil(t, "F-11: the gateway never counted all eight connects", func() bool {
+		f.gw.authDeny.mu.Lock()
+		defer f.gw.authDeny.mu.Unlock()
+		n := 0
+		for k, e := range f.gw.authDeny.entries {
+			if k.kind == "handshake" {
+				n += e.repeats
+			}
+		}
+		return n == 7
+	})
+
 	// And the attempts were not lost: when the quiet period ends, the
 	// count arrives - eight connects, one line, seven repeats.
 	f.clock.Advance(2 * time.Minute)

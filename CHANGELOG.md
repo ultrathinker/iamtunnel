@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.51.0] - 2026-09-28
+
+### Changed
+- The window's emergency stop button reads "Stop all access now" (in the
+  strip above the tabs) and "STOP all access now" (on the Server tab).
+- Messages and the status in the window no longer tell you to close a
+  console and use "Run as administrator"; they point to the window's own
+  "Restart as administrator" button.
+
+### Fixed
+- Without administrator rights, the stop buttons failed with "Access is
+  denied". They now offer to restart the program as administrator, like
+  Start and Register do since 1.49.
+- A second first run on Windows could fail to read the client key the
+  first run was still writing; it now waits for the key to be complete.
+
 ## [1.50.0] - 2026-09-27
 
 ### Added

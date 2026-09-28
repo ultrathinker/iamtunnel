@@ -82,11 +82,11 @@ func (f *Frame) layoutServerScreen(gtx layout.Context) layout.Dimensions {
 								// consequence differs: cutting a live
 								// session is not the same act as
 								// stopping an idle agent, and a button
-								// that said "cut access now" over an
+								// that said "stop all access now" over an
 								// idle machine would teach everyone to
 								// ignore the warning on the day it
 								// counts.
-								word := "STOP — cut access now"
+								word := "STOP all access now"
 								if !s.MaybeBusy() {
 									word = "STOP the machine agent"
 								}

@@ -866,7 +866,7 @@ func (f *Frame) layoutRecordingStrip(gtx layout.Context) layout.Dimensions {
 					// made the natural reading "stop recording" — the
 					// exact opposite of what somebody pressing a red
 					// button on this strip wants.
-					return design.DangerButton(gtx, f.theme, f.btn("strip/stop"), "Cut access now")
+					return design.DangerButton(gtx, f.theme, f.btn("strip/stop"), "Stop all access now")
 				}),
 			)
 		})
@@ -959,7 +959,7 @@ func (f *Frame) layoutUnknownStatusStrip(gtx layout.Context) layout.Dimensions {
 						})
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return design.DangerButton(gtx, f.theme, f.btn("strip/stop"), "Cut access now")
+					return design.DangerButton(gtx, f.theme, f.btn("strip/stop"), "Stop all access now")
 				}),
 			)
 		})

@@ -333,18 +333,19 @@ func pollServerStatus(dir string) ui.ServerState {
 
 // unreachableStatusText is pollServerStatus's IAMT-311 wording for a
 // "status" attempt that ended in an error instead of an answer. A denied
-// read gets requireServerElevation's own sentence for the identical
-// missing right on the identical command (server.go), so an owner reads
-// the same words whether they asked from a terminal or from this window;
-// any other unreachable reason keeps its own words rather than a
-// borrowed one that would not describe it.
+// read names the missing right and the window's own way to get it, the
+// "Restart as administrator" button at the top: this text is only ever
+// shown in the window, where the console advice the command line gives
+// for the same right would send the owner to a terminal for nothing
+// (1.51, the owner's live run). Any other unreachable reason keeps its
+// own words rather than a borrowed one that would not describe it.
 func unreachableStatusText(err error) string {
 	var ce *cliError
 	if errors.As(err, &ce) && ce.code == exitDenied {
 		if runtime.GOOS == "windows" {
-			return "unknown — administrator privileges are required to check: close this console and run \"iamtunnel server status\" using \"Run as administrator\""
+			return "unknown — administrator privileges are required to check: press \"Restart as administrator\" at the top of this window"
 		}
-		return "unknown — root privileges are required to check: run \"sudo iamtunnel server status\" in a terminal"
+		return "unknown — root privileges are required to check: press \"Restart as administrator\" at the top of this window"
 	}
 	return "unknown — this machine's own status could not be checked: " + err.Error()
 }

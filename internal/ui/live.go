@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -672,9 +673,22 @@ func (f *Frame) saidUnder(name string) saying {
 
 // say puts one immediate sentence under a control — a refusal that
 // needed no network, most of the time.
+// consoleAdvice is the command line's answer to a missing right: "close
+// this console and run it (or a named command) using Run as
+// administrator". It is right in a terminal and nonsense in a window,
+// which has no console to close and a "Restart as administrator" button
+// of its own.
+var consoleAdvice = regexp.MustCompile(`close this console and run (it|"[^"]*") using "Run as administrator"`)
+
+// windowWords retells a message for the window: the console advice
+// becomes the window's own button. Everything else passes as it is.
+func windowWords(text string) string {
+	return consoleAdvice.ReplaceAllString(text, `press "Restart as administrator" at the top of this window`)
+}
+
 func (f *Frame) say(name, text string, key design.ColorKey) {
 	f.mu.Lock()
-	f.said[name] = saying{text: text, key: key}
+	f.said[name] = saying{text: windowWords(text), key: key}
 	f.mu.Unlock()
 	f.repaint()
 }
@@ -709,7 +723,7 @@ func (f *Frame) begin(name, working string, work func() (string, design.ColorKey
 			}
 			f.mu.Lock()
 			f.working[name] = false
-			f.said[name] = saying{text: text, key: key}
+			f.said[name] = saying{text: windowWords(text), key: key}
 			f.mu.Unlock()
 			f.repaint()
 		}()
@@ -741,7 +755,7 @@ func (f *Frame) beginGiving(name, working string, work func() (give, text string
 			}
 			f.mu.Lock()
 			f.working[name] = false
-			f.said[name] = saying{text: text, key: key, give: give}
+			f.said[name] = saying{text: windowWords(text), key: key, give: give}
 			f.mu.Unlock()
 			f.repaint()
 		}()
@@ -1101,6 +1115,12 @@ func (f *Frame) stopServer() {
 	stop := f.cfg.Actions.ServerStop
 	if stop == nil {
 		f.say(ctlServerStop, noRuntime, design.BadKey)
+		return
+	}
+	// The agent's control file and its process are administrators'
+	// alone, so without the rights the press could only fail: offer the
+	// restart instead (1.51, the owner's live run).
+	if !f.needsAdmin("Stopping the machine agent") {
 		return
 	}
 	f.begin(ctlServerStop, "Stopping.", func() (string, design.ColorKey) {

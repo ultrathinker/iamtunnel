@@ -4,12 +4,11 @@ package main
 
 // iamt311_unreachable_status_test.go — IAMT-311: unreachableStatusText is
 // pollServerStatus's own wording for a "status" attempt that ended in an
-// error rather than an answer. A denied read must echo
-// requireServerElevation's own sentence for the identical missing right
-// on the identical command (server.go), so an owner reads the same words
-// whether they asked from a terminal or from this window; any other
-// error must keep its own words, never a borrowed rights sentence that
-// would misdescribe it.
+// error rather than an answer. A denied read must name the missing right
+// and the window's own way to get it -- the "Restart as administrator"
+// button -- never a console to close or a command to type (1.51); any
+// other error must keep its own words, never a borrowed rights sentence
+// that would misdescribe it.
 
 import (
 	"errors"
@@ -19,10 +18,10 @@ import (
 )
 
 // TestIAMT311_UnreachableStatusTextDeniedMatchesCLIWording pins the
-// rights-denied case against requireServerElevation's own phrase.
+// rights-denied case: the missing right, and the window's button.
 //
-// Canary: word the denied case differently from requireServerElevation
-// (server.go). This test goes red on the corresponding substring.
+// Canary: send the owner to a console again. This test goes red on the
+// console check.
 func TestIAMT311_UnreachableStatusTextDeniedMatchesCLIWording(t *testing.T) {
 	err := deniedErrf("%s: %v", "/var/lib/iamtunnel-machine/control.json", errors.New("permission denied"))
 	got := unreachableStatusText(err)
@@ -30,13 +29,16 @@ func TestIAMT311_UnreachableStatusTextDeniedMatchesCLIWording(t *testing.T) {
 	if !strings.HasPrefix(got, "unknown") {
 		t.Fatalf("unreachableStatusText for a denied read = %q, want it to start with \"unknown\" — this is a fact that could not be learned, not a negative one", got)
 	}
+	right := "root privileges are required"
 	if runtime.GOOS == "windows" {
-		if !strings.Contains(got, "administrator privileges are required") {
-			t.Fatalf("unreachableStatusText on Windows = %q, want the same wording requireServerElevation uses for the identical missing right", got)
-		}
-	} else {
-		if !strings.Contains(got, "root privileges are required") || !strings.Contains(got, "sudo iamtunnel server status") {
-			t.Fatalf("unreachableStatusText on %s = %q, want the same \"root privileges are required ... sudo iamtunnel server status\" wording requireServerElevation uses", runtime.GOOS, got)
+		right = "administrator privileges are required"
+	}
+	if !strings.Contains(got, right) || !strings.Contains(got, `press "Restart as administrator"`) {
+		t.Fatalf("unreachableStatusText on %s = %q, want %q and the window's \"Restart as administrator\" button", runtime.GOOS, got, right)
+	}
+	for _, console := range []string{"console", "terminal", "sudo ", "iamtunnel server status"} {
+		if strings.Contains(got, console) {
+			t.Fatalf("unreachableStatusText = %q sends the owner to a console (%q); the window has its own button", got, console)
 		}
 	}
 }

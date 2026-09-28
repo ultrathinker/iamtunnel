@@ -18,7 +18,9 @@ package ui
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ultrathinker/iamtunnel/internal/gateway/record"
 )
@@ -59,15 +61,16 @@ func TestCanary_TheTranscriptIsRenderedNotDumped(t *testing.T) {
 // entry, which asked nothing.
 func TestCanary_TheAdminTabAsksEveryTimeItIsEntered(t *testing.T) {
 	f := newBareFrame(t)
-	asked := 0
+	// The asks run on begin's goroutine, so the counts are atomic and every
+	// check first waits for the frame to go idle: a slow machine may not
+	// have run the ask yet when the layout returns.
+	var asked, machinesAsked atomic.Int32
 	f.cfg.Actions.AdminList = func(ctx context.Context) (AdminLists, error) {
-		asked++
+		asked.Add(1)
 		return AdminLists{}, nil
 	}
-
-	machinesAsked := 0
 	f.cfg.Actions.Machines = func(ctx context.Context) ([]MachineAccess, error) {
-		machinesAsked++
+		machinesAsked.Add(1)
 		return nil, nil
 	}
 
@@ -76,23 +79,53 @@ func TestCanary_TheAdminTabAsksEveryTimeItIsEntered(t *testing.T) {
 	client := f.makeTabBody(TabClient)
 
 	_ = admin(gtx)
-	first := asked
+	waitFrameIdle(t, f)
+	first := asked.Load()
 	if first == 0 {
 		t.Fatal("entering the Admin tab asked nothing")
 	}
 	_ = admin(gtx)
-	if asked != first {
-		t.Errorf("redrawing the same tab asked the gateway again -- that is a network call per frame (%d instead of %d)", asked, first)
+	waitFrameIdle(t, f)
+	if got := asked.Load(); got != first {
+		t.Errorf("redrawing the same tab asked the gateway again -- that is a network call per frame (%d instead of %d)", got, first)
 	}
 
 	// Away, and back.
 	_ = client(gtx)
-	if machinesAsked == 0 {
+	waitFrameIdle(t, f)
+	if machinesAsked.Load() == 0 {
 		t.Error("entering the Client tab did not refresh the machine list -- exactly what the maintainer found: the fix covered only Admin")
 	}
 	_ = admin(gtx)
-	if asked <= first {
+	waitFrameIdle(t, f)
+	if asked.Load() <= first {
 		t.Error("returning to the Admin tab did not ask the gateway -- the lists would show the state as of the window's first opening")
+	}
+}
+
+// waitFrameIdle waits until no action the frame began is still running.
+// begin marks an action as working before it starts the goroutine, so an
+// ask the layout started is never missed by this wait.
+func waitFrameIdle(t *testing.T, f *Frame) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		f.mu.Lock()
+		busy := ""
+		for name, on := range f.working {
+			if on {
+				busy = name
+				break
+			}
+		}
+		f.mu.Unlock()
+		if busy == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the frame is still working on %q after 10 s", busy)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 

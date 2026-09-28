@@ -81,19 +81,30 @@ func TestR1MXF12_ARetriedInvitationIsRecordedAsAFailedLoginNotAsAReplay(t *testi
 	// What the retry left behind: a failed login for the enrol literal,
 	// carrying the offered key. That is the line an operator reads to see
 	// a machine trying an invitation that has already been used.
-	evs, _, err := f.log.Read(events.Filter{Types: []events.EventType{events.EventAuthFailure}})
-	if err != nil {
-		t.Fatalf("read the auth.failure journal: %v", err)
-	}
+	// The gateway journals the refusal on its own side of the handshake,
+	// which may finish after the client has already seen the failure, so
+	// the line is waited for rather than read once.
 	fp := fingerprintOf(t, eph.PublicKey())
-	found := false
-	for _, e := range evs {
-		if e.Actor == "enrol" && e.Fingerprint == fp {
-			found = true
+	var evs []events.Event
+	found := func() bool {
+		got, _, err := f.log.Read(events.Filter{Types: []events.EventType{events.EventAuthFailure}})
+		if err != nil {
+			t.Fatalf("read the auth.failure journal: %v", err)
 		}
+		evs = got
+		for _, e := range evs {
+			if e.Actor == "enrol" && e.Fingerprint == fp {
+				return true
+			}
+		}
+		return false
 	}
-	if !found {
-		t.Errorf("the retried invitation left no auth.failure naming the enrol login and the offered key (%s); the journal is where the leak question is answered: %+v", fp, evs)
+	deadline := time.Now().Add(10 * time.Second)
+	for !found() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the retried invitation left no auth.failure naming the enrol login and the offered key (%s); the journal is where the leak question is answered: %+v", fp, evs)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	// And it is not the replay alarm: that word belongs to the race the

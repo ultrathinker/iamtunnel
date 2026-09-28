@@ -175,26 +175,35 @@ func writeNewKeyFile(f *os.File, data []byte) error {
 //
 // The winner claims the name and THEN writes into it — there is no
 // portable create-with-content — so a loser reading in that gap sees an
-// empty file. An empty file is not a corrupt key, it is a key being
-// born, and the answer is to wait for the writer that owns the name.
-// The wait is bounded: a file that is still empty after half a second is
-// genuinely broken, and the honest answer then is the parse refusal
-// loadKeyFile gives (this program never writes an empty key file).
+// empty file, and on Windows it can even see the file's new size before
+// the bytes behind it (a read that comes back short of a PEM block). An
+// empty or unparsable file in that moment is not a corrupt key, it is a
+// key being born, and the answer is to read again until the writer that
+// owns the name is done. The wait is bounded: a file that still does not
+// parse after five seconds is genuinely broken, and the honest answer
+// then is the refusal loadKeyFile gives (this program never leaves a
+// half-written key file behind except when its own write failed).
 func readWinnersKey(path string) (ssh.Signer, error) {
 	const (
-		attempts = 250
+		patience = 5 * time.Second
 		pause    = 2 * time.Millisecond
 	)
-	for i := 0; ; i++ {
+	deadline := time.Now().Add(patience)
+	for {
 		f, info, err := openKeyFile(path)
 		if err != nil {
 			return nil, classifyPathErr(err, path)
 		}
-		if info.Size() > 0 || i == attempts {
-			defer f.Close()
-			return loadKeyFile(path, f, info)
+		last := time.Now().After(deadline)
+		if info.Size() > 0 || last {
+			signer, lerr := loadKeyFile(path, f, info)
+			f.Close()
+			if lerr == nil || last {
+				return signer, lerr
+			}
+		} else {
+			f.Close()
 		}
-		f.Close()
 		time.Sleep(pause)
 	}
 }

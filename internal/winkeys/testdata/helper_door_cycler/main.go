@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/ultrathinker/iamtunnel/internal/winkeys"
 )
@@ -55,14 +56,23 @@ func main() {
 		os.Exit(2)
 	}
 
+	// A short pause after each call leaves the other process a gap to
+	// take the lock in. The Windows lock is a share-none handle, not a
+	// queue: a loop that releases and reacquires with no pause at all
+	// can starve the other process past lockContentionWait on a slow
+	// machine, which is a property of this loop, not of real writers.
+	// The calls still contend: each one holds the lock across a disk
+	// flush, far longer than the pause.
 	for i := 0; i < n; i++ {
 		if err := d.Install(doorID, winkeys.TestKey); err != nil {
 			fmt.Fprintln(os.Stderr, "install", i, ":", err)
 			os.Exit(2)
 		}
+		time.Sleep(time.Millisecond)
 		if err := d.Remove(doorID); err != nil {
 			fmt.Fprintln(os.Stderr, "remove", i, ":", err)
 			os.Exit(2)
 		}
+		time.Sleep(time.Millisecond)
 	}
 }

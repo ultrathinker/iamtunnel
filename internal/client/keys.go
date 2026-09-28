@@ -50,8 +50,15 @@ func EnsureKey(dir string) (ssh.Signer, error) {
 	f, info, err := openKeyFile(path)
 	switch {
 	case err == nil:
-		defer f.Close()
-		return loadKeyFile(path, f, info)
+		signer, lerr := loadKeyFile(path, f, info)
+		f.Close()
+		if lerr != nil && keyMayBeBeingWritten(info) {
+			// Another first run claimed the name a moment ago and has
+			// not finished writing into it: the same wait the loser of
+			// the create takes (readWinnersKey), not a corrupt key.
+			return readWinnersKey(path)
+		}
+		return signer, lerr
 	case os.IsNotExist(err):
 		return createKeyIfAbsent(dir, path)
 	default:
@@ -206,6 +213,16 @@ func readWinnersKey(path string) (ssh.Signer, error) {
 		}
 		time.Sleep(pause)
 	}
+}
+
+// keyMayBeBeingWritten says whether a key file that does not load may
+// simply not be finished yet: it is empty, or it was written in the last
+// few seconds. A first run that finds the name already taken can open
+// it between the winner's create and its write, and must wait rather
+// than call the key corrupt. An older file that does not parse is
+// refused at once, as before.
+func keyMayBeBeingWritten(info os.FileInfo) bool {
+	return info.Size() == 0 || time.Since(info.ModTime()) < 5*time.Second
 }
 
 // openKeyFile opens path for reading and returns both the handle and

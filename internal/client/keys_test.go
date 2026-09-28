@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -133,5 +134,45 @@ func TestM9cConcurrentFirstRunsAgreeOnOneKey(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "key" {
 		t.Errorf("the client directory holds %d entries (%v), want exactly the key file — a loser must read the winner's key, not leave a second one behind", len(entries), entries)
+	}
+}
+
+// A first run can open the key file between another first run's create
+// and its write: the name exists, the file is still empty. That is a key
+// being born, not a corrupt one, so EnsureKey waits for the writer and
+// hands back the key it wrote.
+func TestEnsureKeyWaitsForAKeyStillBeingWritten(t *testing.T) {
+	src := t.TempDir()
+	if _, err := client.EnsureKey(src); err != nil {
+		t.Fatalf("make a key file: %v", err)
+	}
+	pemBytes, err := os.ReadFile(client.KeyPath(src))
+	if err != nil {
+		t.Fatalf("read the key file: %v", err)
+	}
+	dir := t.TempDir()
+	path := client.KeyPath(dir)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("claim the name: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		done <- os.WriteFile(path, pemBytes, 0o600)
+	}()
+
+	got, err := client.EnsureKey(dir)
+	if werr := <-done; werr != nil {
+		t.Fatalf("finish the write: %v", werr)
+	}
+	if err != nil {
+		t.Fatalf("EnsureKey on a key still being written = %v, want it to wait for the writer", err)
+	}
+	want, err := ssh.ParsePrivateKey(pemBytes)
+	if err != nil {
+		t.Fatalf("parse the written key: %v", err)
+	}
+	if !bytes.Equal(got.PublicKey().Marshal(), want.PublicKey().Marshal()) {
+		t.Fatal("EnsureKey handed back a different key from the one the writer published")
 	}
 }

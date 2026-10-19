@@ -109,9 +109,10 @@ console and run it using "Run as administrator".`; the program itself
 doesn't trigger a UAC prompt.
 
 If you already opened the program the ordinary way, you don't need to close
-it: in the window's top-right corner, next to the title, there's a small,
-unlabeled button that pulses slowly. That's "restart with administrator
-rights"; once rights are granted, the button disappears. The old red "
+it: in the window's top-right corner, next to the title, there's a small
+orange button, "Restart as administrator" (it doesn't blink). That's
+"restart with administrator rights"; once rights are granted, the button
+disappears. The old red "
 administrator rights required" bar under the tabs is gone — it used to sit
 on every screen, including ones where rights didn't matter. Now, if a
 button didn't work because of rights, the program says so in a line right
@@ -144,6 +145,17 @@ for an error) used to be the part that got cut.
   ```
 The program contacts the gateway and confirms its identity. Wait for a
 success message.
+
+**If the computer is already registered and you need to move it to another
+gateway** (there is no Set up tab after the first registration): the
+**Settings** tab, the "registration" row → **Move to another gateway…** →
+paste the new gateway's code → **REGISTER ON THIS GATEWAY**. The new
+registration replaces the old one; if the agent is already running on the
+computer, press STOP on the Server tab and START again so that it connects
+through the new gateway. If the code fails with "i/o timeout", the program
+says why: most likely the gateway's security group or firewall does not let
+this computer reach the gateway's port (inside one AWS network, the
+gateway's private address helps).
 
 ### Step 5. Turn on autostart
 Once setup succeeds, turn on autostart. On the **Server** tab, below the
@@ -185,6 +197,14 @@ fills in the missing record, and the agent can start normally from then on;
 until you press it, **Start** refuses. This only appears for a registration
 that genuinely needs it — an ordinary, up-to-date registration never shows
 this box.
+
+### Where to enter the AI classifier key
+
+It is needed only by the gateway's administrator, and only for the command
+check modes "ai" and "both". The **Admin → Classifier** tab → the "new key"
+field → **SET KEY**. If the gateway has no key, the **Admin → Safety** tab
+shows a **No AI key — set it…** button that leads straight there; the
+"Change these settings" window says the same.
 
 ### How many steps is this now
 **Before:** tell the administrator your computer's name and your Windows
@@ -309,8 +329,8 @@ bit differently on a Mac, and it's obvious right away:
 - **Connect** opens a **Terminal.app** window running `client connect` —
   the same as the command window that opens on Windows. Nothing needs to be
   typed into it; session recording follows the same rules.
-- **Restart with administrator rights** — the same small, unlabeled,
-  slowly-pulsing button in the top-right corner as on Windows; it
+- **Restart with administrator rights** — the same small orange
+  button in the top-right corner as on Windows, not blinking; it
   disappears once rights are granted. On a Mac it shows the standard macOS
   rights prompt (the same one you see installing other software).
   Cancelling it means the window keeps running as before and reports that
@@ -440,7 +460,14 @@ the one you're on now is marked "in use", the rest show a **Use** button.
 
 - **Add** — paste the second gateway's connection string into the form
   below the list, and name it if you like ("Work"). The first gateway isn't
-  lost.
+  lost. The key fingerprint may be pasted with the `SHA256:` prefix too, as
+  the commands print it.
+- **Become an administrator of a new gateway** without forgetting the first:
+  paste its one-time claim line (`iamtunnel-claim://…`) into the same form
+  on the Client tab — or press **Join another gateway…** on the
+  **Admin → People** tab (it sits next to "FORGET THIS IDENTITY"; there is
+  no need to forget the first gateway). The new gateway appears in the list
+  and becomes the current one.
 - **Switch** — one press on **Use**. Nothing to type, ever: this program has
   no passwords at all. The only check is your key — one per computer,
   already known to every gateway that lists you.
@@ -684,8 +711,16 @@ gone — the program says so plainly rather than showing an empty window.
 ### 1. Message: OpenSSH service isn't running
 - **What you see:** pressing Start on the server shows an error about the
   remote-login service (`sshd`) check.
-- **What to do:** the standard OpenSSH service should be running on the
-  Windows computer. Open an administrator PowerShell and start it:
+- **What to do:** since 1.52 the window knows by itself that the service
+  is missing or stopped: the "sshd service" row on the Server tab says so in
+  advance, and START opens a window with the button "Install and start
+  OpenSSH Server" (or "Start OpenSSH Server") — the program installs the
+  Windows component, turns on automatic startup of the service and starts
+  it, then starts the agent. Administrator rights are needed: without them
+  the window offers to restart as administrator. If Windows Update is
+  blocked on the machine, install OpenSSH Server through "Settings →
+  System → Optional features". The console route for an administrator is an
+  administrator PowerShell:
   ```powershell
   Start-Service sshd
   ```

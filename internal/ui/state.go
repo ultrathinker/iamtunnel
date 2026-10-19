@@ -75,6 +75,11 @@ type ServerState struct {
 	// SshdRunning reports the Windows OpenSSH service is running and
 	// listening (SPEC §3.2 checks it before Start).
 	SshdRunning bool
+	// SshdState is what the WINDOW itself learned of the OpenSSH Server
+	// service, with or without an agent running: SshdMissing,
+	// SshdStopped, SshdRunning, or "" when it could not ask (1.52,
+	// sshd_prompt.go).
+	SshdState string
 	// Running reports that the machine's own server PROCESS is up --
 	// separate from Waiting, which is about its tunnel to the gateway
 	// (IAMT-358).

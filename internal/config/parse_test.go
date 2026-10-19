@@ -42,6 +42,9 @@ func TestParseConnStringOK(t *testing.T) {
 		{"IAMTUNNEL://GW.example.COM:22/bob01" + "#" + fpr43, "GW.example.COM", "bob01", "SHA256:" + fpr43, 22},
 		{"iamtunnel://[2001:db8::1]:2222/carol._-x#" + fpr43, "[2001:db8::1]", "carol._-x", "SHA256:" + fpr43, 2222},
 		{"  iamtunnel://gw:1/dave9#" + fpr43 + "  ", "gw", "dave9", "SHA256:" + fpr43, 1},
+		// The prefix every command prints is accepted: nothing follows
+		// the fingerprint in a connection string (1.52).
+		{"iamtunnel://gw:2222/alice#SHA256:" + fpr43, "gw", "alice", "SHA256:" + fpr43, 2222},
 	}
 	for _, tc := range cases {
 		got, err := ParseConnString(tc.in)
@@ -68,8 +71,7 @@ func TestParseConnStringErrors(t *testing.T) {
 		{"iamtunnel://gw:foo/alice#" + fpr43, "1 to 65535"},
 		{"iamtunnel://gw/alice#" + fpr43, `not <host>:<port>`}, // no port
 		{"iamtunnel://-bad:2222/alice#" + fpr43, "not a valid hostname"},
-		{"iamtunnel://gw:2222/alice#deadbeef", "43 base64 characters"}, // too short
-		{"iamtunnel://gw:2222/alice#SHA256:" + fpr43, `without the "SHA256:" prefix`},
+		{"iamtunnel://gw:2222/alice#deadbeef", "43 base64 characters"},       // too short
 		{"iamtunnel://gw:2222/alice#" + fpr43 + "=", "43 base64 characters"}, // padding
 	}
 	for _, tc := range cases {

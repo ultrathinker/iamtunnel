@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -110,11 +111,16 @@ func Run(ctx context.Context, cfg Config) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			cfg.logf("run: dial failed, retrying in %s: %v", delay, err)
-			if !sleepOrDone(ctx, delay) {
+			var wait time.Duration
+			wait, delay = nextRetry(cfg, err, delay)
+			if isAuthRefusal(err) {
+				cfg.logf("run: the gateway refused this machine's key - it was probably removed or re-registered there; retrying in %s (stop the agent and register again with a fresh enrol code): %v", wait, err)
+			} else {
+				cfg.logf("run: dial failed, retrying in %s: %v", wait, err)
+			}
+			if !sleepOrDone(ctx, wait) {
 				return ctx.Err()
 			}
-			delay = nextBackoff(delay, cfg.BackoffMax)
 			continue
 		}
 
@@ -135,6 +141,28 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		delay = nextBackoff(delay, cfg.BackoffMax)
 	}
+}
+
+// isAuthRefusal says whether a dial reached the gateway and was refused for
+// its key: the SSH layer's "unable to authenticate". The package has no
+// typed error for it (golang.org/x/crypto/ssh returns a plain one), so the
+// words are the contract, as everywhere else in the program that tells this
+// from an outage.
+func isAuthRefusal(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unable to authenticate")
+}
+
+// nextRetry is how long to wait after a failed dial and what the delay
+// becomes for the next one. An ordinary failure takes the short, capped
+// backoff; a refusal of the key takes the long one (Config.AuthBackoff*).
+func nextRetry(cfg Config, err error, delay time.Duration) (wait, next time.Duration) {
+	if isAuthRefusal(err) {
+		if delay < cfg.AuthBackoffBase {
+			delay = cfg.AuthBackoffBase
+		}
+		return delay, nextBackoff(delay, cfg.AuthBackoffMax)
+	}
+	return delay, nextBackoff(delay, cfg.BackoffMax)
 }
 
 // sweepBeforeConnect removes every door line before the very first

@@ -360,6 +360,12 @@ var guiSetupEnv map[string]string
 // once instead of waiting for its turn: set after an action changed them.
 var guiSetupFactsStale atomic.Bool
 
+// guiSSHDState asks the OS about the OpenSSH Server service for the
+// Server tab (1.52). The Windows window sets it to
+// server.SSHDServiceState; nil, as in tests and elsewhere, leaves the
+// state unknown.
+var guiSSHDState func() string
+
 // serverSetupFactsCache reads the setup facts every few ticks, not every
 // tick: the autostart fact is a Task Scheduler query, a process of its
 // own, and it changes only when somebody presses the checkbox.
@@ -379,6 +385,11 @@ func (c *serverSetupFactsCache) apply(st *ui.ServerState, dir string) {
 	}
 	c.ticks++
 	st.AutostartKnown, st.Autostart, st.NeedsConfirm = c.autostartKnown, c.autostart, c.needsConfirm
+	// The service query is cheap (one SCM call, no process), so it runs
+	// every tick: somebody may install or stop sshd at any moment.
+	if guiSSHDState != nil {
+		st.SshdState = guiSSHDState()
+	}
 }
 
 // startServerStatusPoll asks the three questions a tick can answer and
@@ -901,7 +912,7 @@ func claimDialError(addr string, err error) error {
 			"if this machine has already joined, it IS the administrator already and needs nothing "+
 			"pasted here (%v)", addr, err)
 	}
-	return fmt.Errorf("could not reach the gateway at %s: %w", addr, err)
+	return fmt.Errorf("could not reach the gateway at %s: %w%s", addr, err, reachHint(addr, err))
 }
 
 // pairDialError is claimDialError's own fix (IAMT-356), repeated for
@@ -920,7 +931,7 @@ func pairDialError(addr string, err error) error {
 			"or expired — ask the administrator to open a new one (\"iamtunnel admin pairing start\") and try "+
 			"again (%v)", addr, err)
 	}
-	return fmt.Errorf("could not reach the gateway at %s: %w", addr, err)
+	return fmt.Errorf("could not reach the gateway at %s: %w%s", addr, err, reachHint(addr, err))
 }
 
 // guiAdminLists is what the Admin tab shows: people, machines and

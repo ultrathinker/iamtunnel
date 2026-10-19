@@ -37,6 +37,7 @@ import (
 // another.
 const (
 	ctlSetupRegister      = "setup/register"
+	ctlSettingsReenrol    = "settings/reenrol"
 	ctlClientSave         = "client/connect-string"
 	ctlClientName         = "client/connect-string/name"
 	ctlClientGateways     = "client/gateways"
@@ -185,6 +186,10 @@ type Actions struct {
 	// ServerConfirmSetup lays the enrolment anchor down for a
 	// registration that predates it. Needs administrator rights.
 	ServerConfirmSetup func() (string, error)
+	// ServerPrepareSSHD installs Windows' OpenSSH Server when it is
+	// missing, sets it to start with Windows and starts it (1.52,
+	// sshd_prompt.go). It needs administrator rights.
+	ServerPrepareSSHD func() (string, error)
 
 	// AdminGrant hands one person access to one machine, until the given
 	// deadline (empty means indefinite) — the same work "admin grants
@@ -910,23 +915,51 @@ const noRuntime = "This window was opened without a runtime — the control is d
 // being asked, then "enrolled" or "failed" — so the screen's headline
 // and its status line tell the same story.
 func (f *Frame) registerThisMachine() {
-	code := strings.TrimSpace(f.editor(ctlSetupRegister).Text())
+	f.registerWith(ctlSetupRegister,
+		"Registered as %s. Open the Server tab and press START.")
+}
+
+// registered says whether this machine has a registration as far as the
+// window knows: it had one when the window started (cfg.Enrolled), or this
+// window has just made one. The window decides cfg.Enrolled once, at its
+// start, so a window opened before the first REGISTER used to go on
+// treating the machine as unregistered until it was restarted (16.10.2026:
+// no "registration" row in Settings after a successful REGISTER).
+func (f *Frame) registered() bool {
+	return f.cfg.Enrolled || f.snap.Setup.Status == "enrolled"
+}
+
+// reenrolThisMachine is the Settings tab's "register on another gateway"
+// (1.52): the same enrol, from a machine that is already registered and
+// therefore has no Set up tab. On 29.09.2026 a machine had to move to a
+// new gateway and the window offered no way to paste the new code.
+func (f *Frame) reenrolThisMachine() {
+	f.registerWith(ctlSettingsReenrol,
+		"Registered as %s on the new gateway. If the machine agent is running, press STOP and then START on the Server tab so it connects there.")
+}
+
+// registerWith runs the enrol with the code in ctl's box and reports under
+// ctl; done is the success sentence, with %s for the machine's name.
+func (f *Frame) registerWith(ctl, done string) {
+	code := strings.TrimSpace(f.editor(ctl).Text())
 	if code == "" {
-		f.say(ctlSetupRegister,
+		f.say(ctl,
 			"Paste the one-time enrol code your administrator gave you into the box above first.",
 			design.BadKey)
 		return
 	}
 	enrol := f.cfg.Actions.Enrol
 	if enrol == nil {
-		f.say(ctlSetupRegister, noRuntime, design.BadKey)
+		f.say(ctl, noRuntime, design.BadKey)
 		return
 	}
-	f.reviseSnapshot(func(s *Snapshot) {
-		s.Setup.Status = "working"
-		s.Setup.Detail = "talking to the gateway"
-	})
-	f.begin(ctlSetupRegister, "Talking to the gateway — 10–20 seconds.",
+	if ctl == ctlSetupRegister {
+		f.reviseSnapshot(func(s *Snapshot) {
+			s.Setup.Status = "working"
+			s.Setup.Detail = "talking to the gateway"
+		})
+	}
+	f.begin(ctl, "Talking to the gateway — 10–20 seconds.",
 		func() (string, design.ColorKey) {
 			machine, osUser, err := enrol(code)
 			if err != nil {
@@ -934,10 +967,12 @@ func (f *Frame) registerThisMachine() {
 				// the alternative is somebody asking for a second code they
 				// do not need and will not get.
 				detail := err.Error()
-				f.reviseSnapshot(func(s *Snapshot) {
-					s.Setup.Status = "failed"
-					s.Setup.Detail = detail
-				})
+				if ctl == ctlSetupRegister {
+					f.reviseSnapshot(func(s *Snapshot) {
+						s.Setup.Status = "failed"
+						s.Setup.Detail = detail
+					})
+				}
 				return detail, design.BadKey
 			}
 			f.reviseSnapshot(func(s *Snapshot) {
@@ -952,7 +987,8 @@ func (f *Frame) registerThisMachine() {
 					s.Setup.OSUser = osUser
 				}
 			})
-			return "Registered as " + machine + ". Open the Server tab and press START.", design.GoodKey
+			f.editor(ctl).SetText("")
+			return fmt.Sprintf(done, machine), design.GoodKey
 		})
 }
 
@@ -971,6 +1007,14 @@ func (f *Frame) saveConnectionString(replace bool) {
 		f.say(ctlClientSave,
 			"Paste the connection string your administrator gave you into the box above first.",
 			design.BadKey)
+		return
+	}
+	// A claim line or a pairing string pasted here is a gateway to add
+	// too - one this person becomes an administrator of (1.52). They are
+	// spent exactly as on the Admin tab, and the gateway lands in the
+	// list above like any other.
+	if p, perr := paste.Parse(line); perr == nil && (p.Kind == paste.Claim || p.Kind == paste.Pair) {
+		f.joinWith(ctlClientSave, p)
 		return
 	}
 	save := f.cfg.Actions.SaveConnection
@@ -1518,22 +1562,45 @@ func (f *Frame) joinAsAdmin() {
 		f.say(ctlAdminPairJoin, err.Error(), design.BadKey)
 		return
 	}
+	f.joinWith(ctlAdminPairJoin, parsed)
+}
+
+// joinWith spends a claim line or a pairing string and reports under ctl:
+// the Admin tab's join card, or the Client tab's "add another gateway"
+// box, which takes these lines too since 1.52.
+func (f *Frame) joinWith(ctl string, parsed paste.Parsed) {
 	// The box takes both kinds; the work behind them is not the same one.
 	join := f.cfg.Actions.AdminPairClaim
 	if parsed.Kind == paste.Claim {
 		join = f.cfg.Actions.AdminClaim
 	}
 	if join == nil {
-		f.say(ctlAdminPairJoin, noRuntime, design.BadKey)
+		f.say(ctl, noRuntime, design.BadKey)
 		return
 	}
 	ref := parsed.Addr() + "#" + parsed.Fingerprint
 	pin := parsed.Secret
-	f.begin(ctlAdminPairJoin, "Asking the gateway.", func() (string, design.ColorKey) {
+	f.begin(ctl, "Asking the gateway.", func() (string, design.ColorKey) {
 		msg, who, err := join(ref, pin)
 		if err != nil {
+			// The line stays in the box: it is spent only by a success,
+			// and a gateway that could not be reached (a firewall, a
+			// security group) spent nothing.
 			return err.Error(), design.BadKey
 		}
+		f.editor(ctl).SetText("")
+		// A join from a machine that already had an identity has just made
+		// ANOTHER gateway the current one (1.52): what the old one
+		// answered must go, exactly as when the person switches gateways
+		// on the Client tab, and the list there must show the new row.
+		f.mu.Lock()
+		before := f.snap.Admin.ThisMachine
+		f.mu.Unlock()
+		if before != nil && who != nil && before.Gateway != who.Gateway {
+			f.forgetTheOtherGatewaysAnswers()
+			f.afterGatewayChange()
+		}
+		f.refreshGateways()
 		// The card must stop offering what has just been spent. A claim
 		// line and a pairing PIN are each good once; leaving "Become an
 		// administrator" on screen for another three seconds invites a

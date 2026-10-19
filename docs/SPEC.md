@@ -1272,10 +1272,12 @@ would take with it the only place that says how registration ended.
 
 **Administrator rights are a button in the header, not a banner under the
 tabs** (design decision). In the masthead's right edge, one button, `Restart
-as administrator` — no label, no explanatory text beside it. It pulses
-slowly and gently (a full cycle ≈ 3 s, a much smaller amplitude than the
-`Dot`/`Pulse` alert states: this is an invitation, not an alarm), stops on
-an inactive window, and disappears entirely once rights are already held.
+as administrator` — no label, no explanatory text beside it. It is a solid
+orange (the accent colour) and **does not blink** — a decision of 19.10.2026:
+a blinking button made a window without administrator rights redraw at the
+full frame rate, and on a server without a graphics card that took 10–20 %
+of a processor with the server stopped. The button disappears entirely once
+rights are already held, and the space it took stays.
 There is no permanent "Administrator rights are required to open the door"
 line under the tab strip — it used to sit on every screen, including ones
 where rights don't matter, and taught people not to read it. A rights

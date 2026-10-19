@@ -244,6 +244,7 @@ func runGUI(s *streams) int {
 				defer guiSetupFactsStale.Store(true)
 				return guiServerConfirmRegistration(s.env, serverDir)
 			},
+			ServerPrepareSSHD: guiPrepareSSHD,
 			AdminGrantWithCaps: func(person, machine, until, capability string) (string, error) {
 				return guiGrantWithCaps(clientDir, person, machine, until, capability)
 			},

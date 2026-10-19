@@ -41,7 +41,7 @@ func (f *Frame) layoutServerScreen(gtx layout.Context) layout.Dimensions {
 	if f.btn(ctlServerStop).Clicked(gtx) {
 		f.stopServer()
 	}
-	if f.btn(ctlServerStart).Clicked(gtx) && f.needsAdmin("Starting the machine agent") {
+	if f.btn(ctlServerStart).Clicked(gtx) && f.sshdReady() && f.needsAdmin("Starting the machine agent") {
 		f.startServer()
 	}
 
@@ -123,9 +123,7 @@ func (f *Frame) layoutServerScreen(gtx layout.Context) layout.Dimensions {
 		// The machine's own facts.
 		func(gtx layout.Context) layout.Dimensions {
 			rows := []design.FactRow{
-				f.tristateFact("sshd service", s, s.SshdRunning,
-					"running — the machine can be entered",
-					"not running — the door cannot open"),
+				f.sshdFact(s),
 				f.tristateFact("gateway tunnel", s, s.Waiting,
 					"online — the machine is reachable",
 					"offline — the machine is invisible"),
@@ -644,7 +642,7 @@ func (f *Frame) layoutConnString(gtx layout.Context) layout.Dimensions {
 					return design.TextBox(gtx, f.theme, f.editor(ctlClientSave),
 						"iamtunnel://gateway.example:2222/alice#SHA256:…")
 				},
-				"the whole line, including everything after the # — it names the gateway, you, and the gateway's key")
+				"the whole line, including everything after the #; a new gateway's claim line works here too")
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return design.Field(gtx, f.theme, "call it",
@@ -1966,6 +1964,10 @@ func (f *Frame) layoutAlreadyJoined(gtx layout.Context, id *AdminIdentity) layou
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return design.SecondaryButton(gtx, f.theme, f.btn(ctlAdminForget), word)
 				}),
+				layout.Rigid(layout.Spacer{Width: unit.Dp(design.Gap)}.Layout),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return design.SecondaryButton(gtx, f.theme, f.btn(ctlAdminPairJoin+"/another"), "Join another gateway…")
+				}),
 			)
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Gap)}.Layout),
@@ -2056,10 +2058,41 @@ func (f *Frame) layoutPairJoinForm(gtx layout.Context) layout.Dimensions {
 		)
 	}
 
-	if id := f.snap.Admin.ThisMachine; id != nil {
+	id := f.snap.Admin.ThisMachine
+	// Joining ANOTHER gateway (1.52). On 29.09.2026 the owner had to
+	// forget his first gateway to become the administrator of a second:
+	// a joined machine showed its identity and nothing else. The form now
+	// opens over the identity on request, and closes by itself once the
+	// join has made the other gateway the current one.
+	if id != nil && f.btn(ctlAdminPairJoin+"/another").Clicked(gtx) {
+		f.joinAnotherFrom = id.Gateway
+	}
+	if id != nil && f.joinAnotherFrom != "" && id.Gateway != f.joinAnotherFrom {
+		f.joinAnotherFrom = ""
+	}
+	if id != nil && f.joinAnotherFrom == "" {
 		return f.layoutAlreadyJoined(gtx, id)
 	}
-	return formBody(gtx)
+	if id == nil {
+		return formBody(gtx)
+	}
+	if f.btn(ctlAdminPairJoin + "/back").Clicked(gtx) {
+		f.joinAnotherFrom = ""
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return design.Hint(gtx, f.theme, "joining another gateway — "+orDash(id.Gateway)+" stays in the list on the Client tab")
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return design.CompactButton(gtx, f.theme, f.btn(ctlAdminPairJoin+"/back"), "Back")
+				}),
+			)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
+		layout.Rigid(formBody),
+	)
 }
 
 // pairingCardFacts decides what the "Pairing window" card's three fact
@@ -2686,12 +2719,17 @@ func (f *Frame) layoutSettingsScreen(gtx layout.Context) layout.Dimensions {
 		},
 		cardOf(f.theme, "This program",
 			func(gtx layout.Context) layout.Dimensions {
-				return design.Facts(gtx, f.theme, []design.FactRow{
+				rows := []design.FactRow{
 					design.Fact("version", orDash(st.Version)),
 					design.Fact("platform", orDash(st.Platform)),
 					design.Fact("config file", orDash(st.ConfigPath)),
 					design.Fact("data directory", orDash(st.DataDir)),
-				})
+				}
+				if f.registered() {
+					// Before the first registration the Set up tab does this.
+					rows = append(rows, design.FactRow{Label: "registration", Widget: f.layoutReenrol})
+				}
+				return design.Facts(gtx, f.theme, rows)
 			}),
 		cardOf(f.theme, "Recordings on the gateway",
 			func(gtx layout.Context) layout.Dimensions {
@@ -2705,6 +2743,61 @@ func (f *Frame) layoutSettingsScreen(gtx layout.Context) layout.Dimensions {
 			return design.Hint(gtx, f.theme,
 				"To change port, directories or retention edit the configuration file — see iamtunnel help config.")
 		},
+	)
+}
+
+// layoutReenrol moves a registered machine to another gateway (1.52): the
+// Set up tab exists only before the first registration (SPEC §7.1), so
+// this is where the next one goes.
+func (f *Frame) layoutReenrol(gtx layout.Context) layout.Dimensions {
+	if (f.btn(ctlSettingsReenrol).Clicked(gtx) || f.submitted(gtx, ctlSettingsReenrol)) &&
+		f.needsAdmin("Registering this machine") {
+		f.reenrolThisMachine()
+	}
+	word := "REGISTER ON THIS GATEWAY"
+	if f.busy(ctlSettingsReenrol) {
+		word = "REGISTERING…"
+	}
+	said := f.saidUnder(ctlSettingsReenrol)
+	// Closed by default: moving a machine is rare, and the open form is
+	// taller than the page has room for (gate 17's rule).
+	if f.btn(ctlSettingsReenrol + "/open").Clicked(gtx) {
+		f.reenrolOpen = !f.reenrolOpen
+	}
+	if !f.reenrolOpen && said.text == "" {
+		return layout.Flex{Axis: layout.Horizontal, Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return design.Fixed(gtx, f.theme, machineNameText(f.snap.Setup))
+			}),
+			layout.Rigid(layout.Spacer{Width: unit.Dp(design.Gap)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return design.CompactButton(gtx, f.theme, f.btn(ctlSettingsReenrol+"/open"), "Move to another gateway…")
+			}),
+		)
+	}
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return design.Text(gtx, f.theme,
+				"Registered as "+machineNameText(f.snap.Setup)+". Paste the enrol code from the other gateway's "+
+					"administrator: the new registration replaces this one.")
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return design.Field(gtx, f.theme, "enrol code",
+				func(gtx layout.Context) layout.Dimensions {
+					return design.TextBox(gtx, f.theme, f.editor(ctlSettingsReenrol),
+						"iamtunnel-enrol://gateway.example:2222#<fingerprint>:<secret>")
+				},
+				"the whole line — it works once and expires in 15 minutes")
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return design.SecondaryButton(gtx, f.theme, f.btn(ctlSettingsReenrol), word)
+		}),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Tight)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return f.saidFull(gtx, ctlSettingsReenrol, said.text, said.key, 400)
+		}),
 	)
 }
 
@@ -2771,6 +2864,26 @@ func (f *Frame) booleanFact(label string, ok bool, okText, badText string) desig
 // check" sentence in Warn instead of reading ok's Go zero value (false)
 // as a confident badText — "could not find out" and "definitely not"
 // are different claims, and only the true one may be drawn here.
+// sshdFact is the "sshd service" row. What the window learned by asking
+// Windows itself (SshdState, 1.52) is said first: it is known with or
+// without an agent running, and it names the fix START will offer.
+func (f *Frame) sshdFact(s ServerState) design.FactRow {
+	const label = "sshd service"
+	if !s.Unknown {
+		switch s.SshdState {
+		case SshdMissing:
+			return f.booleanFact(label, false, "", "NOT INSTALLED — START will offer to install OpenSSH Server")
+		case SshdStopped:
+			return f.booleanFact(label, false, "", "installed, stopped — START will offer to start it")
+		case SshdRunning:
+			return f.booleanFact(label, true, "running — the machine can be entered", "")
+		}
+	}
+	return f.tristateFact(label, s, s.SshdRunning,
+		"running — the machine can be entered",
+		"not running — the door cannot open")
+}
+
 func (f *Frame) tristateFact(label string, s ServerState, ok bool, okText, badText string) design.FactRow {
 	if s.Unknown {
 		return f.unknownFactRow(label, s.unknownText())

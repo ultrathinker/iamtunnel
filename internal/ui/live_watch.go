@@ -539,10 +539,26 @@ func (f *Frame) layoutSafetySection(gtx layout.Context) layout.Dimensions {
 					// page means importance, and a bar across the whole
 					// column for "open the editor" outweighed every
 					// control that actually changes something.
+					// Where the AI key goes (1.52): on 29.09.2026 the owner
+					// could not find it. A gateway without one judges by the
+					// rules alone, and the button beside the settings goes
+					// straight to the sub-tab that sets it.
+					if f.btn(ctlAdminRiskMode + "/key").Clicked(gtx) {
+						f.selectSubTab("Classifier")
+					}
 					return layout.Flex{Axis: layout.Horizontal}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							return design.CompactButton(gtx, f.theme,
 								f.btn(ctlAdminRiskMode+"/window"), "Change these settings")
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if !known || rm.ClassifierKey {
+								return layout.Dimensions{}
+							}
+							return layout.Inset{Left: unit.Dp(design.Gap)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+								return design.CompactButton(gtx, f.theme,
+									f.btn(ctlAdminRiskMode+"/key"), "No AI key — set it…")
+							})
 						}),
 					)
 				}),

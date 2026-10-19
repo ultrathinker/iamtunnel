@@ -348,7 +348,10 @@ func enrolMachine(s *streams, dir string, code config.EnrolCode) (enrolResult, e
 	peer := admin.Peer{Addr: fmt.Sprintf("%s:%d", code.Host, code.Port), Fingerprint: code.Fingerprint}
 	conn, dialErr := admin.Dial(peer, "enrol", ephemeral, 10*time.Second)
 	if dialErr != nil {
-		return zero, envErrf("iamtunnel enrol: could not reach the gateway at %s: %v", peer.Addr, dialErr)
+		if authRefused(dialErr) {
+			return zero, envErrf("iamtunnel enrol: %s", enrolRefusal(peer.Addr, dialErr))
+		}
+		return zero, envErrf("iamtunnel enrol: could not reach the gateway at %s: %v%s", peer.Addr, dialErr, reachHint(peer.Addr, dialErr))
 	}
 	defer conn.Close()
 

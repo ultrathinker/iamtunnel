@@ -413,7 +413,8 @@ func settingsBody(
 				return layout.Dimensions{}
 			}
 			return design.Hint(gtx, th,
-				"No AI classifier key is set on this gateway, so \"ai\" and \"both\" cannot be chosen.")
+				"No AI classifier key is set on this gateway, so \"ai\" and \"both\" cannot be chosen. "+
+					"Set the typesafe.ai key on the main window: Admin → Classifier.")
 		}),
 		layout.Rigid(layout.Spacer{Height: unit.Dp(design.Wide)}.Layout),
 

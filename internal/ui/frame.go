@@ -48,7 +48,7 @@ type FrameConfig struct {
 	InitialTab string
 
 	// StillFrame suppresses every animation in the window: the masthead's
-	// elevation button stops breathing and the frame renders as one fixed
+	// held-commands button stops breathing and the frame renders as one fixed
 	// picture. The offscreen shot (§7.2) and the pixel tests set it,
 	// because a screenshot of a pulsing control is a different image on
 	// every run, and a test that compares pixels would then be measuring
@@ -124,7 +124,7 @@ const (
 //   - Masthead "IAMTUNNEL" at the top
 //   - The recording strip, above the tabs, whenever someone is working
 //   - Custom tab strip that does NOT jump on tab switch
-//   - The elevation button at the right of the masthead, breathing slowly,
+//   - The elevation button at the right of the masthead, a steady orange,
 //     present exactly while Administrator rights are missing (1.3)
 //   - The five screens of §7.1, drawn from the Snapshot
 //   - Live theme switching following the system theme without restarting
@@ -276,6 +276,13 @@ type Frame struct {
 	// while Task Scheduler catches up.
 	autostartBox     widget.Bool
 	autostartPending int
+	// reenrolOpen: the Settings tab's "move to another gateway" form is
+	// open (1.52).
+	reenrolOpen bool
+	// joinAnotherFrom: the Admin join card's form is open over an
+	// identity this machine already has, and this is the gateway that
+	// identity is on; "" when the form is not open that way (1.52).
+	joinAnotherFrom string
 
 	// lists is the scroll state of each tab's page, owned by this window
 	// and touched only on the layout goroutine (IAMT-229). A widget.List
@@ -661,7 +668,7 @@ func (f *Frame) CheckThemeSync() bool {
 
 // layoutElevationButton is the elevation control in its 1.3 form: one
 // button at the right edge of the masthead, no word of explanation beside
-// it, breathing slowly, and absent entirely once the rights are there
+// it, a steady orange, and absent entirely once the rights are there
 // (SPEC §7.1, decision of the maintainer 17.09.2026).
 //
 // What it replaces, and why. Until 1.3 the same button sat under the tab
@@ -674,10 +681,11 @@ func (f *Frame) CheckThemeSync() bool {
 // that a refusal appears where it happened — under the button that was
 // pressed — and the masthead only carries the standing offer to fix it.
 //
-// The pulse is SoftPulseWidget rather than PulseWidget: slower, and it
-// never fades far. See SoftPulseOpacity for why an alarm cadence is the
-// wrong shape for an invitation. It stops on an inactive window, so a
-// background copy of the program does not blink at the corner of the eye.
+// It does not pulse (decision of the maintainer, 19.10.2026). Until 1.52.2
+// it breathed, and a breathing control asks for a new frame all the time:
+// an idle window without the rights used 10-20% of a processor on a server
+// with no graphics card. The product's orange, fixed, is invitation
+// enough, and costs nothing while nobody touches the window.
 func (f *Frame) layoutElevationButton(gtx layout.Context) layout.Dimensions {
 	if f.cfg.HasAdminRights {
 		// Nothing to offer — but the SPACE is still reserved. Drawing
@@ -689,7 +697,7 @@ func (f *Frame) layoutElevationButton(gtx layout.Context) layout.Dimensions {
 		// rather than a number copied here and left to rot.
 		// TestVerifyTabStripHeightNeverMoves is what holds this.
 		macro := op.Record(gtx.Ops)
-		dims := design.SecondaryButton(gtx, f.theme, f.btn(ctlRestartAdmin), "Restart as administrator")
+		dims := f.elevationFace(gtx)
 		macro.Stop()
 		return layout.Dimensions{Size: image.Pt(0, dims.Size.Y)}
 	}
@@ -712,9 +720,14 @@ func (f *Frame) layoutElevationButton(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
-	return design.SoftPulseWidget(gtx, f.windowActive(), f.animStart, func(gtx layout.Context) layout.Dimensions {
-		return design.SecondaryButton(gtx, f.theme, f.btn(ctlRestartAdmin), "Restart as administrator")
-	})
+	return f.elevationFace(gtx)
+}
+
+// elevationFace is the button itself: the product's orange accent, solid.
+// The space reserved while the rights are present is measured from this
+// same call, so the two can never differ in height.
+func (f *Frame) elevationFace(gtx layout.Context) layout.Dimensions {
+	return design.PrimaryButton(gtx, f.theme, f.btn(ctlRestartAdmin), "Restart as administrator")
 }
 
 // layoutHeldButton is the masthead's second control: it appears only

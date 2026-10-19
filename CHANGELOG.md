@@ -5,6 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.52.3] - 2026-10-19
+
+### Changed
+- "Restart as administrator" is a steady orange button; it no longer blinks.
+
+### Fixed
+- A window without administrator rights redrew itself at the screen's
+  refresh rate for as long as it was open, because of the blinking button:
+  10–20 % of a processor on a server without a graphics card, with nothing
+  running. The button that tells you a command is held, which still
+  breathes, now asks for a new frame ten times a second instead of at once.
+
+### Security
+- Built with Go 1.27.2, which fixes nine standard library vulnerabilities
+  reported against 1.27.0 (net/http, crypto/tls, net/textproto, os).
+
+## [1.52.2] - 2026-10-16
+
+### Fixed
+- An agent whose key the gateway no longer knew (a machine removed on the
+  gateway while its agent was still running) retried about every 30 seconds,
+  and the gateway blocked the whole address after about ten refusals, which
+  also blocked the machine's new registration. A refused key is now retried
+  every 30 seconds, growing to 5 minutes, and the agent's log says so.
+- A refused setup code is no longer reported as "could not reach the
+  gateway": the message names the three causes (a code older than 15
+  minutes, a code already used, an address blocked after repeated failed
+  sign-ins).
+- Settings shows the "registration" row as soon as the window has
+  registered the machine, without a restart.
+- `admin machines remove` and the runbook say to stop the machine's agent
+  first.
+
+## [1.52.1] - 2026-09-29
+
+### Fixed
+- A claim line pasted into the Client tab's box stays there when joining
+  fails; it leaves the box only on success.
+- A re-registration from Settings no longer writes "failed" or "working"
+  into the Set up tab's status of an already registered machine.
+- The OpenSSH prompt is sized to its content; the rights question says
+  "Starting" for a stopped service; the PowerShell used for the install is
+  found through the system directory, not an environment variable.
+- The Server tab's hint under the sshd row said to start the service by
+  hand before pressing Start; it now says Start offers to do it.
+
+### Changed
+- USER guide: moving a registered machine, the claim line in the Client
+  box, "Join another gateway…", the fingerprint prefix and where the AI key
+  goes.
+
+## [1.52.0] - 2026-09-29
+
+### Added
+- OpenSSH Server: the window asks Windows about the sshd service itself (no
+  administrator rights needed), the Server tab says when it is missing or
+  stopped, and START opens a prompt that installs and starts it, then
+  starts the agent.
+- A second gateway: "Join another gateway…" on the Admin tab keeps the first
+  gateway, and the Client tab's box takes claim and pairing lines too.
+- A registered machine can move to another gateway: Settings → registration
+  → "Move to another gateway…".
+- Where the AI key goes: Safety offers "No AI key — set it…", and the
+  settings window and the Guide name Admin → Classifier.
+
+### Changed
+- A connection string accepts its fingerprint with the "SHA256:" prefix.
+- "could not reach the gateway" says what a timeout and a refusal mean
+  (security group or private address; nothing listening).
+
 ## [1.51.1] - 2026-09-28
 
 ### Fixed

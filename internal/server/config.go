@@ -133,6 +133,17 @@ type Config struct {
 	BackoffBase time.Duration
 	BackoffMax  time.Duration
 
+	// AuthBackoffBase/AuthBackoffMax are the same pause after the gateway
+	// REFUSED this machine's key. That is not a network hiccup: the
+	// machine was removed or re-registered there, and every further
+	// attempt with the same key fails the same way. The gateway counts
+	// those failures and blocks the whole address after about ten in five
+	// minutes - which also blocks the machine's new registration - so the
+	// pause is long (16.10.2026: a removed machine retried every 30 s and
+	// got its address blocked for 15 minutes).
+	AuthBackoffBase time.Duration
+	AuthBackoffMax  time.Duration
+
 	// StatusSink, if non-nil, is handed the live *Machine the instant Run
 	// connects (right after a successful Dial), and nil the instant that
 	// Machine stops serving (transport lost, or ctx cancelled) — never
@@ -156,6 +167,9 @@ const (
 	DefaultControlJSONDepth = 16
 	DefaultBackoffBase      = 1 * time.Second
 	DefaultBackoffMax       = 30 * time.Second
+
+	DefaultAuthBackoffBase = 30 * time.Second
+	DefaultAuthBackoffMax  = 5 * time.Minute
 )
 
 // WatchdogLifetimeSlack is how much longer than MaxDoorHard the
@@ -257,6 +271,15 @@ func (c *Config) setDefaults() error {
 	}
 	if c.BackoffMax < c.BackoffBase {
 		c.BackoffMax = c.BackoffBase
+	}
+	if c.AuthBackoffBase <= 0 {
+		c.AuthBackoffBase = DefaultAuthBackoffBase
+	}
+	if c.AuthBackoffMax <= 0 {
+		c.AuthBackoffMax = DefaultAuthBackoffMax
+	}
+	if c.AuthBackoffMax < c.AuthBackoffBase {
+		c.AuthBackoffMax = c.AuthBackoffBase
 	}
 	return nil
 }

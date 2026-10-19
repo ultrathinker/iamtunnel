@@ -195,6 +195,13 @@ func ParseConnString(s string) (ConnString, error) {
 	if err != nil {
 		return zero, err
 	}
+	// The fingerprint is the LAST part of a connection string, so its
+	// "SHA256:" prefix collides with nothing here - unlike in an enrol
+	// code or a claim reference, where a secret follows it. People copy
+	// the fingerprint the way every command prints it, prefix included,
+	// and a refusal for that taught them nothing (1.52, the owner's
+	// live run).
+	fp = strings.TrimPrefix(fp, "SHA256:")
 	if !ValidName(person) {
 		return zero, userErrorf("person %q in the connection string is not a valid name — names are [a-z0-9][a-z0-9._-]{0,31} (SPEC §4.3)", person)
 	}

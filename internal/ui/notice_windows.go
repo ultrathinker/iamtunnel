@@ -18,5 +18,5 @@ package ui
 const (
 	restartAdminNotice = "Press Restart as administrator — Windows will ask for consent."
 	themeFollowsNotice = "The window follows the Windows light or dark setting on its own."
-	sshdServiceNotice  = "The standard Windows OpenSSH service is not running — start the sshd service before pressing Start (see the guide, When something went wrong)."
+	sshdServiceNotice  = "The standard Windows OpenSSH service (sshd) is not running. Press START: the program offers to install and start it for you."
 )

@@ -335,9 +335,25 @@ func PulseOpacity(elapsed time.Duration) float32 {
 // window's chrome and is meant to be noticed once, not watched.
 const SoftPulseDuration = 3 * time.Second
 
+// PulseFrameInterval is how often a breathing control asks for its next
+// frame. It used to ask for one the instant the last was drawn, so a window
+// whose only moving part was a button redrew itself at the screen's refresh
+// rate for as long as it stayed open: 10-20% of a processor on a server with
+// no graphics card and the program doing nothing (19.10.2026). The
+// breath is a 1.5 to 3 second cosine whose opacity moves by a few percent
+// between two frames a tenth of a second apart, which the eye does not tell
+// from a smooth one.
+const PulseFrameInterval = 100 * time.Millisecond
+
+// pulseNextFrame is the moment a breathing control wants to be drawn again.
+func pulseNextFrame(now time.Time) time.Time {
+	return now.Add(PulseFrameInterval)
+}
+
 // SoftPulseOpacity is PulseOpacity's quiet twin, for the one control that
-// pulses in the masthead rather than inside a page: the
-// "Restart as administrator" button (SPEC §7.1, decision of 17.09.2026).
+// pulses in the masthead rather than inside a page: the held-commands
+// button. (It was made for the "Restart as administrator" button, SPEC
+// §7.1, 17.09.2026; that button stopped pulsing on 19.10.2026.)
 //
 // Two differences, both deliberate. It never drops below 0.62, where the
 // notice pulse dips to 0.25 — a chrome element that nearly vanishes reads
@@ -363,7 +379,7 @@ func SoftPulseWidget(gtx layout.Context, active bool, startTime time.Time, w lay
 	if !active {
 		return w(gtx)
 	}
-	gtx.Execute(op.InvalidateCmd{})
+	gtx.Execute(op.InvalidateCmd{At: pulseNextFrame(gtx.Now)})
 	op := paint.PushOpacity(gtx.Ops, SoftPulseOpacity(time.Since(startTime)))
 	dims := w(gtx)
 	op.Pop()
@@ -380,8 +396,9 @@ func PulseWidget(gtx layout.Context, active bool, startTime time.Time, w layout.
 	elapsed := time.Since(startTime)
 	opacity := PulseOpacity(elapsed)
 
-	// Invalidate to drive continuous smooth 60fps animation
-	gtx.Execute(op.InvalidateCmd{})
+	// The next frame is asked for PulseFrameInterval ahead, not at once:
+	// asking at once redraws the window at the screen's refresh rate.
+	gtx.Execute(op.InvalidateCmd{At: pulseNextFrame(gtx.Now)})
 
 	// Apply alpha multiplier
 	alpha := uint8(opacity * 255.0)

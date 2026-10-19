@@ -36,6 +36,7 @@ import (
 	"github.com/ultrathinker/iamtunnel/internal/config"
 	"github.com/ultrathinker/iamtunnel/internal/elevate"
 	"github.com/ultrathinker/iamtunnel/internal/gateway/state"
+	"github.com/ultrathinker/iamtunnel/internal/server"
 	"github.com/ultrathinker/iamtunnel/internal/ui"
 )
 
@@ -152,6 +153,7 @@ func runGUI(s *streams) int {
 	// control-status dial the poller repeats every interval afterwards.
 	snap.Server = pollServerStatus(serverDir)
 	guiSetupEnv = s.env
+	guiSSHDState = server.SSHDServiceState
 	snap.Server.AutostartKnown, snap.Server.Autostart, snap.Server.NeedsConfirm = guiServerSetupFacts(s.env, serverDir)
 
 	updates := make(chan ui.LiveUpdate)
@@ -249,6 +251,7 @@ func runGUI(s *streams) int {
 				defer guiSetupFactsStale.Store(true)
 				return guiServerConfirmRegistration(s.env, serverDir)
 			},
+			ServerPrepareSSHD: guiPrepareSSHD,
 			AdminGrantWithCaps: func(person, machine, until, capability string) (string, error) {
 				return guiGrantWithCaps(clientDir, person, machine, until, capability)
 			},

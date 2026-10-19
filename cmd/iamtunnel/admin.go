@@ -84,7 +84,7 @@ var adminVerbs = map[string]map[string]adminVerb{
 			}},
 		"list":   {},
 		"rename": {args: []string{"<id>", "<new-name>"}, check: func(fs *flagSet) error { return checkNames(fs, 0, 1) }},
-		"remove": {args: []string{"<id>"}, destructive: true, consequence: "removes the machine: its registration key trust and pinned sshd host key are deleted and the door can never reopen for it.", check: func(fs *flagSet) error { return checkNames(fs, 0) }},
+		"remove": {args: []string{"<id>"}, destructive: true, consequence: "removes the machine: its registration key trust and pinned sshd host key are deleted and the door can never reopen for it. If its agent is still running, stop it there first (Server -> STOP): it keeps knocking with the removed key, and the gateway blocks that address for 15 minutes after about ten refusals - a new registration from the same machine then waits.", check: func(fs *flagSet) error { return checkNames(fs, 0) }},
 		"rekey": {args: []string{"<id>"}, flags: []string{"confirm-fingerprint"}, destructive: true, consequence: "replaces the pinned sshd host key of the machine; until the new key is confirmed the door stays closed (SPEC §6.2).",
 			check: func(fs *flagSet) error {
 				if err := checkNames(fs, 0); err != nil {
@@ -436,7 +436,7 @@ func cmdAdminClaim(s *streams, args []string) int {
 	peer := admin.Peer{Addr: fmt.Sprintf("%s:%d", ref.Host, ref.Port), Fingerprint: ref.Fingerprint}
 	conn, dialErr := admin.Dial(peer, "bootstrap", ephemeral, 10*time.Second)
 	if dialErr != nil {
-		return adminFail(s, path, envErrf("could not reach the gateway at %s: %v", peer.Addr, dialErr))
+		return adminFail(s, path, envErrf("could not reach the gateway at %s: %v%s", peer.Addr, dialErr, reachHint(peer.Addr, dialErr)))
 	}
 	defer conn.Close()
 
@@ -530,7 +530,7 @@ func cmdAdminPair(s *streams, args []string) int {
 	// not a pre-registered key, is what grades the attempt.
 	conn, dialErr := admin.Dial(peer, "pairing", signer, 10*time.Second)
 	if dialErr != nil {
-		return adminFail(s, path, envErrf("could not reach the gateway at %s: %v", peer.Addr, dialErr))
+		return adminFail(s, path, envErrf("could not reach the gateway at %s: %v%s", peer.Addr, dialErr, reachHint(peer.Addr, dialErr)))
 	}
 	defer conn.Close()
 

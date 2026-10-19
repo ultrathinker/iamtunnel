@@ -63,7 +63,7 @@ func guideSteps(Snapshot) []design.Step {
 		Number: "2",
 		Where:  "on the administrator's computer",
 		What:   "Become the first administrator: paste that line into the one field. This machine's key becomes an administrator's key.",
-		How:    "ADMIN → JOIN → paste → JOIN AS ADMINISTRATOR",
+		How:    "ADMIN → PEOPLE → paste → JOIN AS ADMINISTRATOR\n(already on another gateway: Join another gateway…)\nthen ADMIN → CLASSIFIER → the typesafe.ai key → SET KEY",
 	}, {
 		Number: "3",
 		Where:  "on the administrator's computer",
@@ -72,7 +72,7 @@ func guideSteps(Snapshot) []design.Step {
 	}, {
 		Number: "4",
 		Where:  "on the machine to be entered",
-		What:   "Register it with that code, then start its agent. Administrator rights are needed once, for the registration.",
+		What:   "Register it with that code, then start its agent. Administrator rights are needed once, for the registration. Windows' OpenSSH Server must be installed: START offers to install it.",
 		How:    "SET UP → paste the code → REGISTER THIS MACHINE\nthen SERVER → START",
 	}, {
 		Number: "5",

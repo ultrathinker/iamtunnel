@@ -188,7 +188,7 @@ func dialAdmin(cs config.ConnString, signer ssh.Signer) (*admin.Conn, error) {
 	peer := admin.Peer{Addr: fmt.Sprintf("%s:%d", cs.Host, cs.Port), Fingerprint: cs.Fingerprint}
 	conn, err := admin.Dial(peer, cs.Person, signer, 10*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("could not reach the gateway at %s: %w", peer.Addr, err)
+		return nil, fmt.Errorf("could not reach the gateway at %s: %w%s", peer.Addr, err, reachHint(peer.Addr, err))
 	}
 	return conn, nil
 }
@@ -391,6 +391,7 @@ func runAdminExec(s *streams, path, clientDir, group, verb string, fs *flagSet) 
 			return printAdminJSON(s, map[string]string{"removed": fs.pos[0]})
 		}
 		fmt.Fprintf(s.out, "removed machine %q.\n", fs.pos[0])
+		fmt.Fprintln(s.out, "If its agent is still running, stop it on the machine (Server -> STOP) before registering it again: a running agent keeps knocking with the removed key and can get that address blocked for 15 minutes.")
 		return exitOK
 
 	case "machines/rekey":
